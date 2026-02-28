@@ -6,12 +6,41 @@
 //
 
 import SwiftUI
+import SwiftData
 
 @main
 struct LSAT_TrackerApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var timerManager = TimerManager()
+    @State private var studyStore = StudyStore()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            MainTabView()
+                .environment(timerManager)
+                .environment(studyStore)
+                .preferredColorScheme(.light)
+        }
+        .modelContainer(for: StudySession.self) { result in
+            if case .success(let container) = result {
+                studyStore.modelContext = container.mainContext
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .active:
+                timerManager.onForeground()
+            case .background, .inactive:
+                if timerManager.isRunning {
+                    // Persist current elapsed without stopping the timer;
+                    // it resumes via timestamp on next foreground
+                    let suite = UserDefaults(suiteName: appGroupSuite) ?? .standard
+                    suite.set(timerManager.computedDaily, forKey: "dailyElapsed")
+                    suite.set(timerManager.computedTotal, forKey: "totalElapsed")
+                }
+            @unknown default:
+                break
+            }
         }
     }
 }
