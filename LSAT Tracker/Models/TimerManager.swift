@@ -1,6 +1,8 @@
 import Foundation
 import Observation
-import WidgetKit
+#if os(iOS)
+import ActivityKit
+#endif
 
 // MARK: - Shared UserDefaults keys
 private enum TimerKey {
@@ -9,6 +11,7 @@ private enum TimerKey {
     static let lastResetDate = "lastResetDate"
     static let timerRunning  = "timerRunning"
     static let timerStartedAt = "timerStartedAt"
+    static let dailyGoal     = "dailyGoal"
 }
 
 let appGroupSuite = "group.evan.lsattimer"
@@ -25,6 +28,9 @@ final class TimerManager {
     private var timerStartedAt: Date?
     private var displayTimer: Timer?
     private let suite: UserDefaults
+    #if os(iOS)
+    private var liveActivity: Activity<LSATTimerAttributes>?
+    #endif
 
     // MARK: - Init
     init() {
@@ -51,9 +57,16 @@ final class TimerManager {
     func onForeground() {
         check4amBoundary()
         rehydrate()
+        stopDisplayTimer()
         if isRunning {
             startDisplayTimer()
         }
+        #if os(iOS)
+        if liveActivity == nil {
+            liveActivity = Activity<LSATTimerAttributes>.activities.first
+        }
+        updateLiveActivity()
+        #endif
     }
 
     // MARK: - Controls
@@ -66,9 +79,11 @@ final class TimerManager {
         suite.set(dailyElapsed, forKey: TimerKey.dailyElapsed)
         suite.set(totalElapsed, forKey: TimerKey.totalElapsed)
         suite.set(true, forKey: TimerKey.timerRunning)
-        suite.set(startDate, forKey: TimerKey.timerStartedAt) // explicit Date, not Date?
+        suite.set(startDate, forKey: TimerKey.timerStartedAt)
         startDisplayTimer()
-        WidgetCenter.shared.reloadAllTimelines()
+        #if os(iOS)
+        startOrUpdateLiveActivity()
+        #endif
     }
 
     func pause() {
@@ -80,7 +95,9 @@ final class TimerManager {
         isRunning = false
         stopDisplayTimer()
         persistState()
-        WidgetCenter.shared.reloadAllTimelines()
+        #if os(iOS)
+        updateLiveActivity()
+        #endif
     }
 
     func toggle() {
@@ -94,6 +111,9 @@ final class TimerManager {
         if wasRunning { pause() }
         dailyElapsed = 0
         suite.set(0.0, forKey: TimerKey.dailyElapsed)
+        #if os(iOS)
+        endLiveActivity()
+        #endif
         if wasRunning { start() }
     }
 
@@ -143,7 +163,7 @@ final class TimerManager {
         suite.set(totalElapsed, forKey: TimerKey.totalElapsed)
         suite.set(isRunning, forKey: TimerKey.timerRunning)
         if let startDate = timerStartedAt {
-            suite.set(startDate, forKey: TimerKey.timerStartedAt) // explicit Date, not Date?
+            suite.set(startDate, forKey: TimerKey.timerStartedAt)
         } else {
             suite.removeObject(forKey: TimerKey.timerStartedAt)
         }
@@ -190,6 +210,77 @@ final class TimerManager {
         displayTimer?.invalidate()
         displayTimer = nil
     }
+
+    // MARK: - Live Activity management
+
+    #if os(iOS)
+    private var currentDailyGoal: TimeInterval {
+        let g = suite.double(forKey: TimerKey.dailyGoal)
+        return g > 0 ? g : 14400
+    }
+
+    private func makeContentState() -> LSATTimerAttributes.ContentState {
+        LSATTimerAttributes.ContentState(
+            dailyElapsed: dailyElapsed,
+            isRunning: isRunning,
+            timerStartedAt: timerStartedAt,
+            dailyGoal: currentDailyGoal
+        )
+    }
+
+    private func startOrUpdateLiveActivity() {
+        if let existing = liveActivity, existing.activityState == .active {
+            updateLiveActivity()
+            return
+        }
+        let authInfo = ActivityAuthorizationInfo()
+        print("[LiveActivity] areActivitiesEnabled: \(authInfo.areActivitiesEnabled)")
+        guard authInfo.areActivitiesEnabled else {
+            print("[LiveActivity] Blocked: Live Activities disabled by user or system.")
+            return
+        }
+        let content = ActivityContent(
+            state: makeContentState(),
+            staleDate: .now.addingTimeInterval(8 * 3600)
+        )
+        do {
+            liveActivity = try Activity<LSATTimerAttributes>.request(
+                attributes: LSATTimerAttributes(),
+                content: content
+            )
+            print("[LiveActivity] Started successfully. ID: \(liveActivity?.id ?? "nil")")
+            print("[LiveActivity] Activity state: \(String(describing: liveActivity?.activityState))")
+            print("[LiveActivity] All active activities count: \(Activity<LSATTimerAttributes>.activities.count)")
+        } catch {
+            print("[LiveActivity] Failed to start: \(error)")
+        }
+    }
+
+    private func updateLiveActivity() {
+        // Always re-scan in case the activity reference is stale
+        liveActivity = Activity<LSATTimerAttributes>.activities.first(where: { $0.activityState == .active })
+        guard let activity = liveActivity else { return }
+        let content = ActivityContent(
+            state: makeContentState(),
+            staleDate: .now.addingTimeInterval(8 * 3600)
+        )
+        Task { await activity.update(content) }
+    }
+
+    private func endLiveActivity() {
+        guard let activity = liveActivity else { return }
+        let finalState = LSATTimerAttributes.ContentState(
+            dailyElapsed: 0, isRunning: false, timerStartedAt: nil, dailyGoal: currentDailyGoal
+        )
+        Task {
+            await activity.end(
+                ActivityContent(state: finalState, staleDate: .now),
+                dismissalPolicy: .immediate
+            )
+        }
+        liveActivity = nil
+    }
+    #endif
 }
 
 // MARK: - TimeInterval formatting

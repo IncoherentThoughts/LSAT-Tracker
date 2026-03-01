@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var showResetTotalAlert1 = false
     @State private var showResetTotalAlert2 = false
     @State private var showManualEdit = false
+    @State private var dailyGoalHours: Int = 4
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
@@ -18,6 +19,20 @@ struct SettingsView: View {
             List {
                 // MARK: Timer Controls
                 Section("Timer") {
+                    HStack {
+                        Label("Daily Goal", systemImage: "target")
+                            .foregroundColor(.toffeeBrown)
+                        Spacer()
+                        Stepper("\(dailyGoalHours)h", value: $dailyGoalHours, in: 1...10)
+                            .onChange(of: dailyGoalHours) { _, newValue in
+                                UserDefaults(suiteName: appGroupSuite)?.set(
+                                    Double(newValue) * 3600, forKey: "dailyGoal"
+                                )
+                            }
+                            .foregroundColor(.lightBronze)
+                    }
+                    .listRowBackground(Color.toffeeBrown.opacity(0.08))
+
                     Button(role: .destructive) {
                         showResetDailyAlert = true
                     } label: {
@@ -62,6 +77,10 @@ struct SettingsView: View {
             }
             .scrollContentBackground(.hidden)
             .background(Color.eggshell)
+            .onAppear {
+                let g = UserDefaults(suiteName: appGroupSuite)?.double(forKey: "dailyGoal") ?? 0
+                dailyGoalHours = g > 0 ? Int(g / 3600) : 4
+            }
             .navigationTitle("Settings")
             .tint(.rosyCopper)
         }

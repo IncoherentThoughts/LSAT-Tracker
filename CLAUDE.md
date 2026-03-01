@@ -23,16 +23,15 @@ Before generating any Swift/SwiftUI code or UI design, read and apply the follow
 
 Also consult:
 - `Examples/` folder — all image files in this folder represent the target UI aesthetic. Match the visual language precisely.
-- `Examples/widget.png` — the exact lockscreen widget design to replicate.
 
 ---
 
 ## Architecture & Tech Stack
 
 - **Language:** Swift (latest stable)
-- **UI Framework:** SwiftUI (100% — no UIKit unless absolutely required for widget/system APIs)
+- **UI Framework:** SwiftUI (100% — no UIKit unless absolutely required for system APIs)
 - **Persistence:** SwiftData (preferred) or UserDefaults for simple key-value; Core Data as fallback
-- **Widgets:** WidgetKit (iOS Lock Screen widget + Home Screen widget optional)
+- **Live Activity:** ActivityKit (iOS Live Activity on Lock Screen + Dynamic Island)
 - **Minimum Deployment Target:** iOS 17+, macOS 14+
 - **Package Manager:** Swift Package Manager only
 
@@ -45,7 +44,8 @@ LSATTimer/
 ├── Models/
 │   ├── StudySession.swift       # Single session model
 │   ├── StudyStore.swift         # Persistence + business logic
-│   └── TimerManager.swift       # ObservableObject timer state
+│   ├── TimerManager.swift       # Observable timer state + Live Activity management
+│   └── LSATTimerAttributes.swift # ActivityKit ActivityAttributes (shared with extension target)
 ├── Views/
 │   ├── MainTabView.swift        # Root tab container
 │   ├── Timer/
@@ -61,9 +61,9 @@ LSATTimer/
 │   └── Settings/
 │       ├── SettingsView.swift
 │       └── ManualEditView.swift
-├── Widgets/
-│   ├── LSATTimerWidget.swift
-│   └── WidgetBundle.swift
+├── LiveActivity/                # Widget extension target (repurposed for Live Activity)
+│   ├── LSATTimerWidget.swift    # ActivityConfiguration + DynamicIsland + ToggleTimerIntent
+│   └── WidgetBundle.swift       # @main LSATWidgetBundle (widget extension target only)
 ├── Resources/
 │   └── Assets.xcassets
 └── Examples/                    # Reference images — do not ship in app bundle
@@ -105,6 +105,7 @@ Charts and insights the user should see (implement all of these):
 Use Swift Charts (native) for all chart components.
 
 ### 3. Settings Page (Left Panel)
+- **Daily Goal** — stepper (1–10 hours, default 4h) that sets the Live Activity progress bar target. Stored in shared UserDefaults key `"dailyGoal"`.
 - **Reset Daily Timer** — resets today's timer to 0:00:00. Confirm once with an action sheet or alert.
 - **Reset Total Timer** — resets all-time total to zero. Confirm **twice** (two sequential confirmation dialogs) before executing.
 - **Advanced Options** (collapsible section):
@@ -113,15 +114,17 @@ Use Swift Charts (native) for all chart components.
   - Warn user if they are editing a future date.
 - **App Version** — shown at bottom of settings, non-interactive.
 
-### 4. iOS Lock Screen Widget
-- Matches `Examples/widget.png` exactly in layout and visual style.
+### 4. iOS Live Activity
+- Appears automatically on the Lock Screen and Dynamic Island when the timer starts.
+- Started by the main app via `ActivityKit`; does **not** require user setup like a widget.
 - Shows:
-  - Today's elapsed study time (large text)
-  - A sleek horizontal progress bar (progress toward a daily goal — default 4 hours, configurable in Settings)
+  - Today's elapsed study time (live-counting large text via `Text(_:style: .timer)`)
+  - A sleek horizontal progress bar (progress toward the daily goal from Settings)
   - **Play / Pause** button that controls the main app timer from the lock screen
-- Widget size: **accessoryRectangular** (Lock Screen widget type)
-- Uses `AppIntent` + `WidgetKit` for interactive controls (iOS 17 interactive widgets)
+- Uses `AppIntent` (`ToggleTimerIntent`) for interactive controls (iOS 17+)
 - Shares state with main app via **App Groups** + shared `UserDefaults` suite
+- Dynamic Island support: compact, expanded, and minimal presentations
+- Live Activity ends automatically when the daily timer is reset; starts again when the timer starts
 
 ---
 
@@ -162,6 +165,7 @@ extension Color {
 - Card backgrounds: `Color.toffeeBrown.opacity(0.08)` — subtle warm elevation against eggshell
 - Nav bar background: `toffeeBrown` — creates contrast between content area and navigation
 - Never use hardcoded hex values in view code — always reference palette names
+- `Theme.swift` must be in **both** the main app target and the widget extension target
 
 ### Typography
 - Timer display: SF Pro Rounded, monospaced digits, large weight
@@ -189,12 +193,13 @@ extension Color {
 ```swift
 // TimerManager.swift — core behavior contract
 
-// Storage keys (shared UserDefaults suite for widget access)
+// Storage keys (shared UserDefaults suite for Live Activity access)
 // "dailyElapsed"         — Double (seconds) for today
 // "totalElapsed"         — Double (seconds) all time
 // "lastResetDate"        — Date of last 4am reset
 // "timerRunning"         — Bool
 // "timerStartedAt"       — Date? (when currently running session began)
+// "dailyGoal"            — Double (seconds), default 14400 (4 hours)
 
 // On every app foreground:
 // 1. Check if a new 4am boundary has passed since lastResetDate
@@ -213,14 +218,20 @@ extension Color {
 
 ---
 
-## Widget Implementation Notes
+## Live Activity Implementation Notes
 
-- Use `AppGroup` identifier: `group.com.yourname.lsattimer` (update with actual bundle prefix)
-- Widget reads from shared `UserDefaults(suiteName:)`
-- Interactive widget requires `AppIntent` conformance for Play/Pause action
-- Widget timeline should refresh every 60 seconds while timer is running
-- Progress bar in widget = `dailyElapsed / dailyGoalSeconds` (clamped to 1.0)
-- Default daily goal: 4 hours (14400 seconds), user-configurable in Settings
+- App Group identifier: `group.evan.lsattimer`
+- Live Activity reads/writes shared `UserDefaults(suiteName: "group.evan.lsattimer")`
+- `LSATTimerAttributes: ActivityAttributes` struct in `LSATTimerAttributes.swift` — must be in **both** the main app target and the widget extension target (use Xcode Target Membership)
+- `ToggleTimerIntent: AppIntent` lives in the widget extension target (`LSATTimerWidget.swift`)
+- Main app starts Live Activity via `Activity<LSATTimerAttributes>.request(...)` on timer start
+- Main app updates state via `activity.update(...)` on pause/resume/foreground
+- Main app ends Live Activity via `activity.end(...)` on daily reset
+- Progress bar = `dailyElapsed / dailyGoal` (clamped to 1.0)
+- Default daily goal: 4 hours (14400 seconds), configurable via Settings stepper
+- `NSSupportsLiveActivities` must be `YES` in the main app's `Info.plist`
+- Live Activities **cannot be tested in Simulator** — require a physical device
+- Dynamic Island support: compact (leading book icon + trailing timer), expanded (full view + progress bar + play/pause), minimal (book icon)
 
 ---
 
@@ -228,7 +239,7 @@ extension Color {
 
 - Use SwiftUI `#if os(macOS)` conditionals for platform-specific layout adjustments
 - macOS version: single window, minimum size 400×600pt
-- No widget on macOS (not applicable)
+- No Live Activity on macOS (not applicable) — use `#if os(iOS)` guards around all ActivityKit code
 - Menu bar item optional stretch goal: show running/paused status + elapsed time in menu bar
 
 ---
@@ -263,12 +274,13 @@ class StudySession {
 - Do not store absolute file paths — use relative references
 - Do not skip the double-confirmation on total timer reset under any circumstances
 - Do not ship the `Examples/` folder in the app bundle
+- Do not use WidgetKit `accessoryRectangular` — the correct feature is a Live Activity via ActivityKit
 
 ---
 
 ## Stretch Goals (Post-MVP)
 
-- [ ] Apple Watch complication (mirrors lock screen widget)
+- [ ] Apple Watch complication (mirrors Live Activity display)
 - [ ] iCloud sync via CloudKit so stats persist across devices
 - [ ] Daily study goal setting with notification reminder
 - [ ] Export study data as CSV
@@ -279,17 +291,22 @@ class StudySession {
 
 ## Development Checklist
 
-- [ ] `Theme.swift` with all colors defined before any view work
+- [ ] `Theme.swift` with all colors defined before any view work — added to **both** targets
 - [ ] `TimerManager.swift` with full background-safe timer logic
-- [ ] App Group configured in both app and widget targets
+- [ ] `LSATTimerAttributes.swift` added to both app and widget extension targets in Xcode
+- [ ] `NSSupportsLiveActivities` = YES in main app Info.plist
+- [ ] App Group `group.evan.lsattimer` configured in both targets (Signing & Capabilities)
 - [ ] 4am reset logic tested across midnight boundary
-- [ ] Widget interactive controls working on physical device (not just simulator)
+- [ ] Live Activity appears on lock screen when timer starts (physical device required)
+- [ ] Dynamic Island shows compact and expanded views correctly (iPhone 14 Pro+)
+- [ ] Play/Pause from lock screen (ToggleTimerIntent) correctly toggles timer
 - [ ] Double-confirmation flow for total reset tested
 - [ ] Manual edit validation (future date warning, 0–23:59 range)
+- [ ] Daily goal stepper in Settings updates Live Activity progress bar
 - [ ] All animations reviewed on real hardware for smoothness
 - [ ] Dark mode: verify color palette still works (adjust if needed)
 - [ ] Accessibility: VoiceOver labels on timer and buttons
 
 ---
 
-*Last updated: project init — update this file whenever architecture decisions change.*
+*Last updated: 2026-03-01 — replaced WidgetKit lock screen widget with ActivityKit Live Activity.*

@@ -1,6 +1,11 @@
 {
   "version": 1,
   "skills": {
+    "ios-debugger-agent": {
+      "source": "dimillian/skills",
+      "sourceType": "github",
+      "computedHash": "ffaa86d5b055e161ec32acd535d5f7581825af0941c691a0c65e59380c04f11f"
+    },
     "swiftui-expert-skill": {
       "source": "avdlee/swiftui-agent-skill",
       "sourceType": "github",

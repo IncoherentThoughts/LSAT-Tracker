@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		FA284E212F54EE7D00726B60 /* ActivityKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA284E202F54EE7D00726B60 /* ActivityKit.framework */; settings = {ATTRIBUTES = (Weak, ); }; };
 		FA73112A2F52A42600E4A16C /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA7311292F52A42600E4A16C /* WidgetKit.framework */; };
 		FA73112C2F52A42600E4A16C /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA73112B2F52A42600E4A16C /* SwiftUI.framework */; };
 		FA7311392F52A42700E4A16C /* LSAT Timer WidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = FA7311272F52A42600E4A16C /* LSAT Timer WidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -51,6 +52,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		FA284E202F54EE7D00726B60 /* ActivityKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ActivityKit.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.2.sdk/System/Library/Frameworks/ActivityKit.framework; sourceTree = DEVELOPER_DIR; };
 		FA7311272F52A42600E4A16C /* LSAT Timer WidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "LSAT Timer WidgetExtension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		FA7311292F52A42600E4A16C /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		FA73112B2F52A42600E4A16C /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
@@ -61,6 +63,21 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		FA284E1C2F54DC9400726B60 /* Exceptions for "LSAT Tracker" folder in "LSAT Tracker" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"LSAT-Tracker-Info.plist",
+			);
+			target = FAA686DA2F52427900481D93 /* LSAT Tracker */;
+		};
+		FA284E1E2F54DD4E00726B60 /* Exceptions for "LSAT Tracker" folder in "LSAT Timer WidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Models/LSATTimerAttributes.swift,
+				Theme.swift,
+			);
+			target = FA7311262F52A42600E4A16C /* LSAT Timer WidgetExtension */;
+		};
 		FA73113A2F52A42700E4A16C /* Exceptions for "LSAT Timer Widget" folder in "LSAT Timer WidgetExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -81,6 +98,10 @@
 		};
 		FAA686DD2F52427900481D93 /* LSAT Tracker */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				FA284E1C2F54DC9400726B60 /* Exceptions for "LSAT Tracker" folder in "LSAT Tracker" target */,
+				FA284E1E2F54DD4E00726B60 /* Exceptions for "LSAT Tracker" folder in "LSAT Timer WidgetExtension" target */,
+			);
 			path = "LSAT Tracker";
 			sourceTree = "<group>";
 		};
@@ -101,6 +122,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FA284E212F54EE7D00726B60 /* ActivityKit.framework in Frameworks */,
 				FA73112C2F52A42600E4A16C /* SwiftUI.framework in Frameworks */,
 				FA73112A2F52A42600E4A16C /* WidgetKit.framework in Frameworks */,
 			);
@@ -133,6 +155,7 @@
 		FA7311282F52A42600E4A16C /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				FA284E202F54EE7D00726B60 /* ActivityKit.framework */,
 				FA7311292F52A42600E4A16C /* WidgetKit.framework */,
 				FA73112B2F52A42600E4A16C /* SwiftUI.framework */,
 			);
@@ -401,7 +424,7 @@
 				INFOPLIST_FILE = "LSAT Timer Widget/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "LSAT Timer Widget";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -435,7 +458,7 @@
 				INFOPLIST_FILE = "LSAT Timer Widget/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "LSAT Timer Widget";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -584,6 +607,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "LSAT-Tracker-Info.plist";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -630,6 +655,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "LSAT-Tracker-Info.plist";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
