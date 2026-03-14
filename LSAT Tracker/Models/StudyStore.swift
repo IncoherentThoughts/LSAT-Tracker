@@ -1,6 +1,22 @@
 import Foundation
 import SwiftData
 
+// MARK: - Backup data types (shared encoding contract for export/import)
+
+private struct StatsBackup: Codable {
+    let exportDate: Date
+    let dailyElapsed: TimeInterval
+    let totalElapsed: TimeInterval
+    let lastResetDate: Date?
+    let sessions: [SessionBackup]
+}
+
+private struct SessionBackup: Codable {
+    let date: Date
+    let duration: TimeInterval
+    let isManualEdit: Bool
+}
+
 /// Bridges SwiftData StudySession records with business logic for charts and stats.
 @Observable
 final class StudyStore {
@@ -54,6 +70,92 @@ final class StudyStore {
             predicate: #Predicate { $0.date == normalized }
         )
         return try? context.fetch(descriptor).first
+    }
+
+    // MARK: - Backup & Restore
+
+    /// Fetches all sessions and encodes them + current timer state into a dated JSON file
+    /// in the system temp directory. Returns the file URL for sharing.
+    func exportBackupFile(timer: TimerManager) throws -> URL {
+        let sessions = fetchAllSessions()
+        let suite = UserDefaults(suiteName: appGroupSuite)
+        let lastResetDate = suite?.object(forKey: "lastResetDate") as? Date
+
+        let backup = StatsBackup(
+            exportDate: Date(),
+            dailyElapsed: timer.computedDaily,
+            totalElapsed: timer.computedTotal,
+            lastResetDate: lastResetDate,
+            sessions: sessions.map {
+                SessionBackup(date: $0.date, duration: $0.duration, isManualEdit: $0.isManualEdit)
+            }
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(backup)
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let filename = "lsat-stats-\(formatter.string(from: Date())).json"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+
+    /// Parses a backup file and returns a human-readable summary for the confirmation alert.
+    /// Call this before `applyBackup` so the user sees what they're restoring.
+    func importPreview(from url: URL) throws -> String {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let backup = try decoder.decode(StatsBackup.self, from: data)
+        let dateStr = backup.exportDate.formatted(.dateTime.month(.abbreviated).day().year().hour().minute())
+        let hours = String(format: "%.1f", backup.totalElapsed / 3600)
+        return "Backup from \(dateStr)\n\(backup.sessions.count) sessions · \(hours)h total\n\nThis will permanently overwrite all current stats."
+    }
+
+    /// Restores all sessions and timer state from a backup file.
+    /// Pauses the timer, replaces SwiftData records, writes UserDefaults, then rehydrates.
+    func applyBackup(from url: URL, timer: TimerManager) throws {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let backup = try decoder.decode(StatsBackup.self, from: data)
+
+        if timer.isRunning { timer.pause() }
+
+        deleteAllSessions()
+        guard let context = modelContext else { return }
+        for s in backup.sessions {
+            context.insert(StudySession(date: s.date, duration: s.duration, isManualEdit: s.isManualEdit))
+        }
+        try? context.save()
+
+        let suite = UserDefaults(suiteName: appGroupSuite)
+        suite?.set(backup.dailyElapsed, forKey: "dailyElapsed")
+        suite?.set(backup.totalElapsed, forKey: "totalElapsed")
+        suite?.set(false,              forKey: "timerRunning")
+        suite?.removeObject(forKey: "timerStartedAt")
+        if let lastReset = backup.lastResetDate {
+            suite?.set(lastReset, forKey: "lastResetDate")
+        }
+
+        // Rehydrate all in-memory timer state from the restored UserDefaults values.
+        timer.onForeground()
+    }
+
+    // MARK: - Private helpers
+
+    private func fetchAllSessions() -> [StudySession] {
+        guard let context = modelContext else { return [] }
+        let descriptor = FetchDescriptor<StudySession>(sort: [SortDescriptor(\.date)])
+        return (try? context.fetch(descriptor)) ?? []
     }
 
     // MARK: - Stats

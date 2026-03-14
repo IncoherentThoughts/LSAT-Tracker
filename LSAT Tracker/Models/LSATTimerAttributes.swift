@@ -1,4 +1,8 @@
 import Foundation
+
+/// Shared across the main app target and the widget extension target.
+let appGroupSuite = "group.evan.lsattimer"
+
 #if os(iOS)
 import ActivityKit
 

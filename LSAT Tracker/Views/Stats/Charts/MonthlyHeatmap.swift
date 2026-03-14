@@ -13,8 +13,8 @@ struct MonthlyHeatmap: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 0) {
-                ForEach(dayLabels, id: \.self) { label in
-                    Text(label)
+                ForEach(dayLabels.indices, id: \.self) { index in
+                    Text(dayLabels[index])
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.lightBronze)
                         .frame(maxWidth: .infinity)

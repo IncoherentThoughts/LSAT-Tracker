@@ -31,13 +31,7 @@ struct LSAT_TrackerApp: App {
             case .active:
                 timerManager.onForeground()
             case .background, .inactive:
-                if timerManager.isRunning {
-                    // Persist current elapsed without stopping the timer;
-                    // it resumes via timestamp on next foreground
-                    let suite = UserDefaults(suiteName: appGroupSuite) ?? .standard
-                    suite.set(timerManager.computedDaily, forKey: "dailyElapsed")
-                    suite.set(timerManager.computedTotal, forKey: "totalElapsed")
-                }
+                timerManager.onBackground()
             @unknown default:
                 break
             }

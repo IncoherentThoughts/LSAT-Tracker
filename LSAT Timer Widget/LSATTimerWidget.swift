@@ -11,7 +11,7 @@ struct ToggleTimerIntent: LiveActivityIntent {
     static var description = IntentDescription("Starts or pauses the LSAT study timer.")
 
     func perform() async throws -> some IntentResult {
-        let suite = UserDefaults(suiteName: "group.evan.lsattimer")
+        let suite = UserDefaults(suiteName: appGroupSuite)
         let isRunning = suite?.bool(forKey: "timerRunning") ?? false
         let goalRaw = suite?.double(forKey: "dailyGoal") ?? 0
         let dailyGoal = goalRaw > 0 ? goalRaw : 14400

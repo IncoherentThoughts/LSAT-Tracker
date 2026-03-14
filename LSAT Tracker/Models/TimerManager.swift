@@ -14,8 +14,6 @@ private enum TimerKey {
     static let dailyGoal     = "dailyGoal"
 }
 
-let appGroupSuite = "group.evan.lsattimer"
-
 @Observable
 final class TimerManager {
     // MARK: - Observed state (drives UI)
@@ -52,6 +50,24 @@ final class TimerManager {
     }
 
     // MARK: - Lifecycle
+
+    /// Call on app background/inactive while timer is running.
+    /// Snapshots computed elapsed into UserDefaults and resets the reference
+    /// point to now — prevents double-counting on the next foreground rehydrate.
+    func onBackground() {
+        guard isRunning else { return }
+        let now = Date()
+        let snapshotDaily = computedDaily
+        let snapshotTotal = computedTotal
+        // Advance the stored base values to the current moment
+        dailyElapsed = snapshotDaily
+        totalElapsed = snapshotTotal
+        // Move the reference point forward so rehydrate sees no elapsed gap
+        timerStartedAt = now
+        suite.set(snapshotDaily, forKey: TimerKey.dailyElapsed)
+        suite.set(snapshotTotal, forKey: TimerKey.totalElapsed)
+        suite.set(now, forKey: TimerKey.timerStartedAt)
+    }
 
     /// Call on every app foreground: check 4am boundary + rehydrate
     func onForeground() {
@@ -124,6 +140,9 @@ final class TimerManager {
         totalElapsed = 0
         suite.set(0.0, forKey: TimerKey.dailyElapsed)
         suite.set(0.0, forKey: TimerKey.totalElapsed)
+        #if os(iOS)
+        endLiveActivity()
+        #endif
         if wasRunning { start() }
     }
 
@@ -186,10 +205,20 @@ final class TimerManager {
 
         guard lastReset < boundary else { return }
 
-        // Roll daily into total and reset daily
+        // If the timer was running across the boundary, credit the pre-boundary
+        // elapsed time to the outgoing daily total before rolling it into total.
+        let wasRunning = suite.bool(forKey: TimerKey.timerRunning)
+        var preBoundaryElapsed: TimeInterval = 0
+        if wasRunning,
+           let startedAt = suite.object(forKey: TimerKey.timerStartedAt) as? Date,
+           startedAt < boundary {
+            preBoundaryElapsed = max(0, boundary.timeIntervalSince(startedAt))
+        }
+
+        // Roll daily (+ any pre-boundary in-flight time) into total and reset daily
         let savedDaily = suite.double(forKey: TimerKey.dailyElapsed)
         let savedTotal = suite.double(forKey: TimerKey.totalElapsed)
-        let newTotal = savedTotal + savedDaily
+        let newTotal = savedTotal + savedDaily + preBoundaryElapsed
 
         suite.set(0.0, forKey: TimerKey.dailyElapsed)
         suite.set(newTotal, forKey: TimerKey.totalElapsed)
@@ -197,6 +226,13 @@ final class TimerManager {
 
         dailyElapsed = 0
         totalElapsed = newTotal
+
+        // Re-anchor timerStartedAt to the boundary so computedDaily only counts
+        // post-boundary time. rehydrate() runs immediately after and reads this.
+        if wasRunning {
+            suite.set(boundary, forKey: TimerKey.timerStartedAt)
+            timerStartedAt = boundary
+        }
     }
 
     private func startDisplayTimer() {

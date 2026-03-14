@@ -310,3 +310,38 @@ class StudySession {
 ---
 
 *Last updated: 2026-03-01 — replaced WidgetKit lock screen widget with ActivityKit Live Activity.*
+
+---
+
+## Design Context
+
+### Users
+Law school applicants self-studying for the LSAT — typically alone, often at a desk or library, in long focused sessions. The app is opened briefly to start or pause the timer, then set aside. The primary job-to-be-done is accurate passive tracking, not active engagement. Users return to the stats screen occasionally to feel a sense of progress over weeks of preparation.
+
+### Brand Personality
+**Three words: Minimal · Warm · Trustworthy**
+
+The app should feel like a trusted, quiet companion — not a coach, not a game, not a dashboard. It does one job with total reliability and gets out of the way. The warm palette (eggshell, toffee brown, rosy copper) signals a human, academic quality rather than a cold productivity tool.
+
+### Emotional Goals
+The app should feel **invisible and frictionless** when in use. A user mid-session should barely register they opened it — tap, timer running, phone down. Nothing should demand attention or interrupt focus. Satisfaction comes from the numbers being there when you look, not from the app asking you to look.
+
+### Aesthetic Direction
+- **Light only** — always the warm eggshell background. Never adapts to system dark mode.
+- Reference aesthetic (the Flow app in `Examples/`) shows a clean dark timer UI — this app takes the same structural minimalism but applies a warm, parchment-toned palette instead of cold black.
+- Anti-reference: **Duolingo / gamified apps** — no streaks used as pressure, no badges, no reward animations, no level-ups. The streak stat exists as neutral data, not motivation infrastructure.
+- No corporate SaaS feel (Toggl, Notion) — this is personal and quiet, not a productivity dashboard.
+
+### Design Principles
+
+1. **Silence is the feature.** When the timer is running, the interface should have nothing competing for attention. Animations are subtle and purposeful; nothing pulses, glows, or demands a glance.
+
+2. **Warmth, never urgency.** Color, copy, and layout should never make a user feel behind, pressured, or guilty. Empty states are neutral. Progress bars fill quietly. No red warnings for low study time.
+
+3. **Data as reflection, not motivation.** The Stats screen is a rearview mirror — it lets users see where they've been. Charts should feel calm and informative, not goal-pressure widgets.
+
+4. **Trust through consistency.** The app never loses data, never resets unexpectedly, never surprises the user. Destructive actions require deliberate confirmation. This reliability is the core value proposition.
+
+5. **One job per screen.** The Timer screen does one thing: track. Settings does one thing: configure. Stats does one thing: reflect. Nothing bleeds across. No upsells, tips, or cross-screen nudges.
+
+*Last updated: 2026-03-14 — design context added via /teach-impeccable.*
