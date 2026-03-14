@@ -154,7 +154,7 @@ final class StudyStore {
 
     private func fetchAllSessions() -> [StudySession] {
         guard let context = modelContext else { return [] }
-        let descriptor = FetchDescriptor<StudySession>(sort: [SortDescriptor(\.date)])
+        let descriptor = FetchDescriptor<StudySession>(sortBy: [SortDescriptor(\StudySession.date)])
         return (try? context.fetch(descriptor)) ?? []
     }
 
