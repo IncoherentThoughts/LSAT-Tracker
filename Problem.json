@@ -1,0 +1,33 @@
+{
+  "dailyElapsed" : 3246.304561972618,
+  "exportDate" : "2026-03-15T19:00:56Z",
+  "lastResetDate" : "2026-03-15T18:06:25Z",
+  "sessions" : [
+    {
+      "date" : "2026-03-10T06:00:00Z",
+      "duration" : 2700,
+      "isManualEdit" : true
+    },
+    {
+      "date" : "2026-03-12T06:00:00Z",
+      "duration" : 2108.0507321357727,
+      "isManualEdit" : false
+    },
+    {
+      "date" : "2026-03-13T06:00:00Z",
+      "duration" : 2160.8053430318832,
+      "isManualEdit" : false
+    },
+    {
+      "date" : "2026-03-14T06:00:00Z",
+      "duration" : 9746.989943623543,
+      "isManualEdit" : false
+    },
+    {
+      "date" : "2026-03-15T06:00:00Z",
+      "duration" : 3246.304561972618,
+      "isManualEdit" : false
+    }
+  ],
+  "totalElapsed" : 33977.99664878845
+}

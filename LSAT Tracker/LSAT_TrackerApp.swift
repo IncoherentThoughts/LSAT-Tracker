@@ -24,6 +24,7 @@ struct LSAT_TrackerApp: App {
         .modelContainer(for: StudySession.self) { result in
             if case .success(let container) = result {
                 studyStore.modelContext = container.mainContext
+                studyStore.recalibrateTotalIfNeeded(timer: timerManager)
             }
         }
         .onChange(of: scenePhase) { _, newPhase in

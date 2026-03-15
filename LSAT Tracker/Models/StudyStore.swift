@@ -72,6 +72,32 @@ final class StudyStore {
         return try? context.fetch(descriptor).first
     }
 
+    // MARK: - Data Integrity
+
+    /// One-time recalibration to fix totalElapsed if it was corrupted by the
+    /// double-counting bug in check4amBoundary (which previously added dailyElapsed
+    /// to totalElapsed even though totalElapsed already included dailyElapsed).
+    /// Recomputes totalElapsed as sum-of-past-sessions + today's dailyElapsed,
+    /// then marks the migration done so it never runs again.
+    func recalibrateTotalIfNeeded(timer: TimerManager) {
+        let suite = UserDefaults(suiteName: appGroupSuite)
+        let migrationKey = "totalRecalibratedV2"
+        guard !(suite?.bool(forKey: migrationKey) ?? false) else { return }
+        guard let context = modelContext else { return }
+
+        let today = Calendar.current.startOfDay(for: Date())
+        let descriptor = FetchDescriptor<StudySession>(
+            predicate: #Predicate { $0.date < today }
+        )
+        let pastSessions = (try? context.fetch(descriptor)) ?? []
+        let pastTotal = pastSessions.reduce(0) { $0 + $1.duration }
+        let todayDaily = suite?.double(forKey: "dailyElapsed") ?? 0
+
+        suite?.set(pastTotal + todayDaily, forKey: "totalElapsed")
+        suite?.set(true, forKey: migrationKey)
+        timer.onForeground()
+    }
+
     // MARK: - Backup & Restore
 
     /// Fetches all sessions and encodes them + current timer state into a dated JSON file

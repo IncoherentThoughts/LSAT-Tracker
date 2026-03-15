@@ -205,20 +205,28 @@ final class TimerManager {
 
         guard lastReset < boundary else { return }
 
-        // If the timer was running across the boundary, credit the pre-boundary
-        // elapsed time to the outgoing daily total before rolling it into total.
+        // totalElapsed is always kept in sync with dailyElapsed via pause() and onBackground(),
+        // so it already includes dailyElapsed — do NOT add dailyElapsed again.
+        //
+        // For a running timer we need to adjust for in-flight time relative to the boundary:
+        //   • timerStartedAt < boundary: totalElapsed doesn't yet include time from startedAt
+        //     to boundary → add that pre-boundary slice.
+        //   • timerStartedAt > boundary: onBackground() already baked post-boundary time into
+        //     totalElapsed that belongs to the new day → subtract it back out.
         let wasRunning = suite.bool(forKey: TimerKey.timerRunning)
         var preBoundaryElapsed: TimeInterval = 0
+        var postBoundaryInTotal: TimeInterval = 0
         if wasRunning,
-           let startedAt = suite.object(forKey: TimerKey.timerStartedAt) as? Date,
-           startedAt < boundary {
-            preBoundaryElapsed = max(0, boundary.timeIntervalSince(startedAt))
+           let startedAt = suite.object(forKey: TimerKey.timerStartedAt) as? Date {
+            if startedAt < boundary {
+                preBoundaryElapsed = max(0, boundary.timeIntervalSince(startedAt))
+            } else {
+                postBoundaryInTotal = max(0, startedAt.timeIntervalSince(boundary))
+            }
         }
 
-        // Roll daily (+ any pre-boundary in-flight time) into total and reset daily
-        let savedDaily = suite.double(forKey: TimerKey.dailyElapsed)
         let savedTotal = suite.double(forKey: TimerKey.totalElapsed)
-        let newTotal = savedTotal + savedDaily + preBoundaryElapsed
+        let newTotal = savedTotal - postBoundaryInTotal + preBoundaryElapsed
 
         suite.set(0.0, forKey: TimerKey.dailyElapsed)
         suite.set(newTotal, forKey: TimerKey.totalElapsed)
