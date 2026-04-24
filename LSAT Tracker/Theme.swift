@@ -27,8 +27,44 @@ extension Color {
 
     // MARK: - LSAT Timer Palette
     static let toffeeBrown   = Color(hex: "#9E6240")  // primary text, icons
-    static let lightBronze   = Color(hex: "#DEA47E")  // secondary — muted labels, inactive elements
-    static let rosyCopper    = Color(hex: "#CD4631")  // active states, progress bars, accents
+    static let toffeeInk     = Color(hex: "#7A4A2E")  // deeper variant for display numerals + primary text
+    static let lightBronze   = Color(hex: "#DEA47E")  // muted inline elements
+    static let bronzeMuted   = Color(hex: "#C89573")  // muted body labels / eyebrows
+    static let rosyCopper    = Color(hex: "#CD4631")  // active states, progress, accents
+    static let copperSoft    = Color(hex: "#E5735F")  // soft copper for ring backdrops
     static let eggshell      = Color(hex: "#F8F2DC")  // app background
-    static let skyReflection = Color(hex: "#81ADC8")  // achievement callouts, streaks, highlights
+    static let eggshellDeep  = Color(hex: "#F3EACD")  // card background — warm parchment
+    static let skyReflection = Color(hex: "#81ADC8")  // achievement callouts (Best Day)
+
+    static let hairline       = Color.toffeeBrown.opacity(0.15)
+    static let hairlineStrong = Color.toffeeBrown.opacity(0.25)
+}
+
+// MARK: - Typography helpers
+
+extension Text {
+    /// Eyebrow label — small uppercase tracked label used above stat cards, in tab bars, etc.
+    func eyebrowStyle(color: Color = .bronzeMuted) -> some View {
+        self
+            .font(.system(size: 10.5, weight: .semibold))
+            .tracking(1.47)
+            .textCase(.uppercase)
+            .foregroundColor(color)
+    }
+
+    /// Page title — "Statistics", "Settings"
+    func pageTitleStyle() -> some View {
+        self
+            .font(.system(size: 34, weight: .light))
+            .tracking(-1.02)
+            .foregroundColor(.toffeeInk)
+    }
+
+    /// Section header inside a card — "Last 7 days", "All-time"
+    func sectionHeaderStyle() -> some View {
+        self
+            .font(.system(size: 17, weight: .semibold))
+            .tracking(-0.17)
+            .foregroundColor(.toffeeInk)
+    }
 }

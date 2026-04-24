@@ -25,6 +25,9 @@ struct LSAT_TrackerApp: App {
             if case .success(let container) = result {
                 studyStore.modelContext = container.mainContext
                 studyStore.recalibrateTotalIfNeeded(timer: timerManager)
+                timerManager.persistSession = { [weak studyStore] date, duration in
+                    studyStore?.upsertSession(date: date, duration: duration)
+                }
             }
         }
         .onChange(of: scenePhase) { _, newPhase in

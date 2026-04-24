@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var showResetTotalAlert1 = false
     @State private var showResetTotalAlert2 = false
     @State private var showManualEdit = false
+    @State private var showAdvanced = false
     @State private var dailyGoalHours: Int = 4
 
     // Backup & Restore
@@ -26,101 +27,117 @@ struct SettingsView: View {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
     }
 
-    var body: some View {
-        NavigationStack {
-            List {
-                // MARK: Timer Controls
-                Section("Timer") {
-                    HStack {
-                        Label("Daily Goal", systemImage: "target")
-                            .foregroundColor(.toffeeBrown)
-                        Spacer()
-                        Stepper("\(dailyGoalHours)h", value: $dailyGoalHours, in: 1...10)
-                            .onChange(of: dailyGoalHours) { _, newValue in
-                                UserDefaults(suiteName: appGroupSuite)?.set(
-                                    Double(newValue) * 3600, forKey: "dailyGoal"
-                                )
-                            }
-                            .foregroundColor(.lightBronze)
-                    }
-                    .listRowBackground(Color.toffeeBrown.opacity(0.08))
-
-                    Button(role: .destructive) {
-                        showResetDailyAlert = true
-                    } label: {
-                        Label("Reset Daily Timer", systemImage: "arrow.counterclockwise.circle")
-                            .foregroundColor(.toffeeBrown)
-                    }
-                    .listRowBackground(Color.toffeeBrown.opacity(0.08))
-
-                    Button(role: .destructive) {
-                        showResetTotalAlert1 = true
-                    } label: {
-                        Label("Reset Total Timer", systemImage: "trash.circle")
-                            .foregroundColor(.toffeeBrown)
-                    }
-                    .listRowBackground(Color.toffeeBrown.opacity(0.08))
-                }
-
-                // MARK: Advanced
-                Section {
-                    DisclosureGroup("Advanced") {
-                        Button {
-                            showManualEdit = true
-                        } label: {
-                            Label("Manual Day Edit", systemImage: "pencil.and.list.clipboard")
-                                .foregroundColor(.toffeeBrown)
-                        }
-                    }
-                }
-                .listRowBackground(Color.toffeeBrown.opacity(0.08))
-
-                // MARK: Backup & Restore
-                Section("Backup & Restore") {
-                    Button {
-                        do {
-                            let url = try store.exportBackupFile(timer: timer)
-                            exportFile = ExportFile(url: url)
-                        } catch {
-                            exportError = error.localizedDescription
-                            showExportError = true
-                        }
-                    } label: {
-                        Label("Export Stats", systemImage: "square.and.arrow.up")
-                            .foregroundColor(.toffeeBrown)
-                    }
-                    .listRowBackground(Color.toffeeBrown.opacity(0.08))
-
-                    Button {
-                        showImporter = true
-                    } label: {
-                        Label("Import Stats", systemImage: "square.and.arrow.down")
-                            .foregroundColor(.toffeeBrown)
-                    }
-                    .listRowBackground(Color.toffeeBrown.opacity(0.08))
-                }
-
-                // MARK: About
-                Section("About") {
-                    HStack {
-                        Text("Version")
-                            .foregroundColor(.toffeeBrown)
-                        Spacer()
-                        Text(appVersion)
-                            .foregroundColor(.lightBronze)
-                    }
-                    .listRowBackground(Color.toffeeBrown.opacity(0.08))
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .background(Color.eggshell)
-            .onAppear {
-                let g = UserDefaults(suiteName: appGroupSuite)?.double(forKey: "dailyGoal") ?? 0
-                dailyGoalHours = g > 0 ? Int(g / 3600) : 4
-            }
-            .navigationTitle("Settings")
-            .tint(.rosyCopper)
+    private var pageHeader: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("Settings").pageTitleStyle()
+            Spacer()
+            Text("v \(appVersion)").eyebrowStyle()
         }
+        .padding(.horizontal, 6)
+        .padding(.top, 10)
+        .padding(.bottom, 28)
+    }
+
+    private var timerGroup: some View {
+        SettingsGroupView(label: "Timer") {
+            SettingsRow(icon: "target", label: "Daily goal") {
+                InlineStepper(
+                    value: dailyGoalHours,
+                    range: 1...10,
+                    display: "\(dailyGoalHours)h"
+                ) { newValue in
+                    dailyGoalHours = newValue
+                    UserDefaults(suiteName: appGroupSuite)?.set(
+                        Double(newValue) * 3600, forKey: "dailyGoal"
+                    )
+                }
+            }
+            SettingsDivider()
+            SettingsRow(
+                icon: "arrow.clockwise",
+                label: "Reset daily timer",
+                chevron: true,
+                action: { showResetDailyAlert = true }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon: "trash",
+                label: "Reset total timer",
+                chevron: true,
+                destructive: true,
+                action: { showResetTotalAlert1 = true }
+            )
+        }
+    }
+
+    private var advancedGroup: some View {
+        SettingsGroupView {
+            SettingsRow(
+                icon: "gearshape",
+                label: "Advanced",
+                chevron: true,
+                action: { showAdvanced = true }
+            )
+        }
+    }
+
+    private var backupGroup: some View {
+        SettingsGroupView(label: "Backup & Restore") {
+            SettingsRow(
+                icon: "square.and.arrow.up",
+                label: "Export stats",
+                chevron: true,
+                action: { performExport() }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon: "square.and.arrow.down",
+                label: "Import stats",
+                chevron: true,
+                action: { showImporter = true }
+            )
+        }
+    }
+
+    private var aboutGroup: some View {
+        SettingsGroupView(label: "About") {
+            SettingsRow(icon: "info.circle", label: "Version") {
+                Text(appVersion)
+                    .font(.system(size: 14, weight: .regular, design: .monospaced))
+                    .foregroundColor(.bronzeMuted)
+            }
+        }
+    }
+
+    private func performExport() {
+        do {
+            let url = try store.exportBackupFile(timer: timer)
+            exportFile = ExportFile(url: url)
+        } catch {
+            exportError = error.localizedDescription
+            showExportError = true
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                pageHeader
+                timerGroup
+                advancedGroup
+                backupGroup
+                aboutGroup
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 62)
+            .padding(.bottom, 120)
+        }
+        .background(Color.eggshell.ignoresSafeArea())
+        .onAppear {
+            let g = UserDefaults(suiteName: appGroupSuite)?.double(forKey: "dailyGoal") ?? 0
+            dailyGoalHours = g > 0 ? Int(g / 3600) : 4
+        }
+        .tint(.rosyCopper)
         .alert("Reset Daily Timer?", isPresented: $showResetDailyAlert) {
             Button("Reset", role: .destructive) {
                 timer.resetDaily()
@@ -152,11 +169,14 @@ struct SettingsView: View {
                 .environment(timer)
                 .environment(store)
         }
-        // Export: native share sheet so user can save to Files, AirDrop, etc.
+        .sheet(isPresented: $showAdvanced) {
+            AdvancedSheet(showManualEdit: $showManualEdit)
+                .environment(timer)
+                .environment(store)
+        }
         .sheet(item: $exportFile) { file in
             ActivityView(items: [file.url])
         }
-        // Import: system document picker filtered to JSON files
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: [.json],
@@ -206,15 +226,209 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Helpers
+// MARK: - Settings primitives
 
-/// Identifiable wrapper so .sheet(item:) can present the share sheet for a URL.
+private struct SettingsGroupView<Content: View>: View {
+    var label: String? = nil
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let label {
+                Text(label)
+                    .eyebrowStyle()
+                    .padding(.horizontal, 6)
+            }
+            VStack(spacing: 0) {
+                content()
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(Color.eggshellDeep)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .stroke(Color.toffeeBrown.opacity(0.06), lineWidth: 1)
+            )
+        }
+        .padding(.top, 20)
+    }
+}
+
+private struct SettingsDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.hairline)
+            .frame(height: 1)
+            .padding(.leading, 58)
+    }
+}
+
+private struct SettingsRow<Trailing: View>: View {
+    let icon: String
+    var iconWeight: Font.Weight = .regular
+    let label: String
+    var chevron: Bool = false
+    var destructive: Bool = false
+    var action: (() -> Void)? = nil
+    @ViewBuilder var trailing: () -> Trailing
+
+    init(
+        icon: String,
+        iconWeight: Font.Weight = .regular,
+        label: String,
+        chevron: Bool = false,
+        destructive: Bool = false,
+        action: (() -> Void)? = nil,
+        @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }
+    ) {
+        self.icon = icon
+        self.iconWeight = iconWeight
+        self.label = label
+        self.chevron = chevron
+        self.destructive = destructive
+        self.action = action
+        self.trailing = trailing
+    }
+
+    private var primaryColor: Color {
+        destructive ? .rosyCopper : .toffeeInk
+    }
+
+    private var iconColor: Color {
+        destructive ? .rosyCopper : .toffeeBrown
+    }
+
+    var body: some View {
+        Button {
+            action?()
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: icon)
+                    .font(.system(size: 17, weight: iconWeight))
+                    .foregroundColor(iconColor)
+                    .frame(width: 28, height: 28)
+
+                Text(label)
+                    .font(.system(size: 15))
+                    .foregroundColor(primaryColor)
+
+                Spacer(minLength: 8)
+
+                trailing()
+
+                if chevron {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.lightBronze)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(action == nil)
+    }
+}
+
+private struct InlineStepper: View {
+    let value: Int
+    let range: ClosedRange<Int>
+    let display: String
+    let onChange: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            stepButton(systemName: "minus") {
+                if value > range.lowerBound { onChange(value - 1) }
+            }
+            divider
+            Text(display)
+                .font(.system(size: 13, weight: .regular, design: .monospaced))
+                .foregroundColor(.toffeeInk)
+                .frame(minWidth: 34)
+            divider
+            stepButton(systemName: "plus") {
+                if value < range.upperBound { onChange(value + 1) }
+            }
+        }
+        .frame(height: 28)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.eggshell)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.hairline, lineWidth: 1)
+        )
+    }
+
+    private func stepButton(systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.toffeeInk)
+                .frame(width: 30, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.hairline)
+            .frame(width: 1, height: 16)
+    }
+}
+
+// MARK: - Advanced sheet (lightweight host for ManualEditView entry)
+
+private struct AdvancedSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var showManualEdit: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                SettingsGroupView(label: "Editing") {
+                    SettingsRow(
+                        icon: "pencil.and.list.clipboard",
+                        label: "Manual day edit",
+                        chevron: true,
+                        action: {
+                            dismiss()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                                showManualEdit = true
+                            }
+                        }
+                    )
+                }
+                .padding(.horizontal, 22)
+
+                Spacer()
+            }
+            .padding(.top, 16)
+            .background(Color.eggshell.ignoresSafeArea())
+            .navigationTitle("Advanced")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .foregroundColor(.rosyCopper)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Export helpers
+
 private struct ExportFile: Identifiable {
     let id = UUID()
     let url: URL
 }
 
-/// Thin UIKit bridge — presents UIActivityViewController for file sharing.
 #if os(iOS)
 private struct ActivityView: UIViewControllerRepresentable {
     let items: [Any]

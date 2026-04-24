@@ -3,62 +3,10 @@ import SwiftUI
 import ActivityKit
 import AppIntents
 
-// MARK: - Toggle Intent
-
-struct ToggleTimerIntent: LiveActivityIntent {
-    static let openAppWhenRun = false
-    static var title: LocalizedStringResource = "Toggle LSAT Timer"
-    static var description = IntentDescription("Starts or pauses the LSAT study timer.")
-
-    func perform() async throws -> some IntentResult {
-        let suite = UserDefaults(suiteName: appGroupSuite)
-        let isRunning = suite?.bool(forKey: "timerRunning") ?? false
-        let goalRaw = suite?.double(forKey: "dailyGoal") ?? 0
-        let dailyGoal = goalRaw > 0 ? goalRaw : 14400
-
-        let newIsRunning: Bool
-        let newStartedAt: Date?
-        let newDailyElapsed: Double
-
-        if isRunning {
-            let stored = suite?.double(forKey: "dailyElapsed") ?? 0
-            if let startedAt = suite?.object(forKey: "timerStartedAt") as? Date {
-                let interval = max(0, Date().timeIntervalSince(startedAt))
-                let daily = stored + interval
-                let total = (suite?.double(forKey: "totalElapsed") ?? 0) + interval
-                suite?.set(daily, forKey: "dailyElapsed")
-                suite?.set(total, forKey: "totalElapsed")
-                suite?.removeObject(forKey: "timerStartedAt")
-                newDailyElapsed = daily
-            } else {
-                newDailyElapsed = stored
-            }
-            suite?.set(false, forKey: "timerRunning")
-            newIsRunning = false
-            newStartedAt = nil
-        } else {
-            let startDate = Date()
-            suite?.set(startDate, forKey: "timerStartedAt")
-            suite?.set(true, forKey: "timerRunning")
-            newIsRunning = true
-            newStartedAt = startDate
-            newDailyElapsed = suite?.double(forKey: "dailyElapsed") ?? 0
-        }
-
-        // Push the new state into the Live Activity immediately
-        let newState = LSATTimerAttributes.ContentState(
-            dailyElapsed: newDailyElapsed,
-            isRunning: newIsRunning,
-            timerStartedAt: newStartedAt,
-            dailyGoal: dailyGoal
-        )
-        let content = ActivityContent(state: newState, staleDate: .now.addingTimeInterval(8 * 3600))
-        for activity in Activity<LSATTimerAttributes>.activities {
-            await activity.update(content)
-        }
-        return .result()
-    }
-}
+// `ToggleTimerIntent` lives in `LSAT Tracker/Models/ToggleTimerIntent.swift`
+// so both the main app and the widget extension target compile the same type.
+// `Button(intent:)` in the Live Activity view depends on the main app being
+// able to resolve the intent class — otherwise iOS silently drops the tap.
 
 // MARK: - Helpers
 
@@ -80,7 +28,7 @@ private func fmtElapsed(_ t: TimeInterval) -> String {
         : String(format: "%02d:%02d", m, sec)
 }
 
-// MARK: - Reusable sub-views
+// MARK: - AppIconView
 
 /// App icon view.
 /// Fallback: toffeeBrown rounded rect + book glyph.
@@ -92,13 +40,11 @@ private struct AppIconView: View {
     var size: CGFloat = 28
     var body: some View {
         ZStack {
-            // Fallback layer (always present)
             RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
                 .fill(Color.toffeeBrown)
             Image(systemName: "book.fill")
                 .font(.system(size: size * 0.44, weight: .semibold))
                 .foregroundStyle(Color.eggshell)
-            // Real icon layer — invisible until "LSATAppIcon" is added to widget assets
             Image("LSATAppIcon")
                 .resizable()
                 .scaledToFill()
@@ -107,32 +53,136 @@ private struct AppIconView: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+        )
     }
 }
 
-/// Circular progress ring shown in the minimal Dynamic Island slot when another
-/// activity is competing. Outer arc = daily goal progress; center = pause/play icon.
-private struct ProgressRingView: View {
-    var progress: Double
-    var isRunning: Bool
-    var size: CGFloat = 26
+// MARK: - Widget Play/Pause Button
+
+private struct WidgetPlayPauseButton: View {
+    let isRunning: Bool
 
     var body: some View {
-        ZStack {
-            Circle()
-                .stroke(Color.toffeeBrown.opacity(0.35), lineWidth: 2.5)
-            Circle()
-                .trim(from: 0, to: progress)
-                .stroke(
-                    Color.rosyCopper,
-                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-            Image(systemName: isRunning ? "pause.fill" : "play.fill")
-                .font(.system(size: size * 0.30, weight: .bold))
-                .foregroundStyle(.primary)
+        Button(intent: ToggleTimerIntent()) {
+            ZStack {
+                Circle()
+                    .fill(isRunning ? Color.eggshell.opacity(0.9) : Color.rosyCopper)
+                    .shadow(
+                        color: isRunning
+                            ? Color.toffeeBrown.opacity(0.18)
+                            : Color.rosyCopper.opacity(0.55),
+                        radius: isRunning ? 3 : 7,
+                        x: 0,
+                        y: isRunning ? 2 : 6
+                    )
+                if isRunning {
+                    Circle()
+                        .strokeBorder(Color.toffeeBrown.opacity(0.25), lineWidth: 1)
+                }
+                Image(systemName: isRunning ? "pause.fill" : "play.fill")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(isRunning ? Color.toffeeInk : Color(hex: "#FDF6E3"))
+                    .offset(x: isRunning ? 0 : 1.5)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .frame(width: 44, height: 44)
         }
-        .frame(width: size, height: size)
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Timer Digits
+
+/// HH:MM:SS with colons rendered in lightBronze at ultraLight weight.
+private struct TimerDigitsView: View {
+    let elapsed: TimeInterval
+
+    private var h: Int { Int(max(0, elapsed)) / 3600 }
+    private var m: Int { (Int(max(0, elapsed)) % 3600) / 60 }
+    private var s: Int { Int(max(0, elapsed)) % 60 }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            digit(String(h))
+            colon
+            digit(String(format: "%02d", m))
+            colon
+            digit(String(format: "%02d", s))
+        }
+    }
+
+    private func digit(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 40, weight: .bold))
+            .monospacedDigit()
+            .foregroundStyle(Color.toffeeInk)
+    }
+
+    private var colon: some View {
+        Text(":")
+            .font(.system(size: 40, weight: .regular))
+            .foregroundStyle(Color.lightBronze)
+            .baselineOffset(4)
+            .padding(.horizontal, 2)
+    }
+}
+
+// MARK: - Goal Progress Bar
+
+private struct GoalProgressBar: View {
+    let progress: Double
+    let goalHours: Int
+
+    private var axisLabels: [String] {
+        (0...4).map { i in
+            let num = goalHours * i
+            if num % 4 == 0 {
+                return "\(num / 4)h"
+            }
+            return String(format: "%.1fh", Double(num) / 4.0)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.toffeeBrown.opacity(0.18))
+                        .frame(height: 4)
+                    Capsule()
+                        .fill(LinearGradient(
+                            colors: [Color.rosyCopper, Color.copperSoft],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ))
+                        .frame(width: max(0, geo.size.width * progress), height: 4)
+                        .shadow(color: Color.rosyCopper.opacity(0.4), radius: 4, x: 0, y: 0)
+                        .animation(.easeInOut(duration: 0.4), value: progress)
+                    ForEach([0.25, 0.5, 0.75] as [Double], id: \.self) { frac in
+                        Rectangle()
+                            .fill(Color.toffeeBrown.opacity(0.35))
+                            .frame(width: 1, height: 8)
+                            .offset(x: geo.size.width * frac - 0.5)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(height: 8)
+
+            HStack {
+                ForEach(Array(axisLabels.enumerated()), id: \.offset) { i, label in
+                    if i > 0 { Spacer() }
+                    Text(label)
+                }
+            }
+            .font(.system(size: 9.5, weight: .regular, design: .monospaced))
+            .tracking(0.76)
+            .foregroundStyle(Color.bronzeMuted)
+        }
     }
 }
 
@@ -146,64 +196,90 @@ struct LSATLockScreenView: View {
         return min(1.0, context.state.dailyElapsed / context.state.dailyGoal)
     }
 
-    /// Live-counting timer when running; static formatted string when paused.
-    @ViewBuilder
-    private var timerDisplay: some View {
-        if context.state.isRunning, let startedAt = context.state.timerStartedAt {
-            Text(
-                liveAnchor(elapsed: context.state.dailyElapsed, startedAt: startedAt),
-                style: .timer
-            )
-            .font(.system(.largeTitle, design: .rounded, weight: .heavy))
-            .monospacedDigit()
-            .foregroundStyle(.primary)
-        } else {
-            Text(fmtElapsed(context.state.dailyElapsed))
-                .font(.system(.largeTitle, design: .rounded, weight: .heavy))
-                .monospacedDigit()
-                .foregroundStyle(.primary)
-        }
+    private var goalHours: Int {
+        max(1, Int(context.state.dailyGoal / 3600))
+    }
+
+    private var percentageText: String {
+        String(format: "%.0f%%", progress * 100)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Header row: icon + title + toggle button
+        VStack(alignment: .leading, spacing: 0) {
+            // ── Header row ────────────────────────────────────────────────
             HStack(spacing: 10) {
-                AppIconView(size: 42)
-                Text("Study Timer")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                AppIconView(size: 28)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("LSAT Tracker")
+                        .eyebrowStyle()
+                    Text("Study Session")
+                        .font(.system(size: 13, weight: .semibold))
+                        .tracking(-0.13)
+                        .foregroundStyle(Color.toffeeInk)
+                }
+
                 Spacer()
-                Button(intent: ToggleTimerIntent()) {
-                    Image(
-                        systemName: context.state.isRunning
-                            ? "pause.circle.fill"
-                            : "play.circle.fill"
-                    )
-                    .font(.system(size: 44))
-                    .foregroundStyle(Color.eggshell)
-                    .symbolRenderingMode(.hierarchical)
+
+                WidgetPlayPauseButton(isRunning: context.state.isRunning)
+                    .offset(y: 4)
+            }
+
+            Spacer().frame(height: 10)
+
+            // ── Timer row ─────────────────────────────────────────────────
+            // Use Text(timerInterval:pauseTime:countsDown:) for BOTH states so
+            // the view identity stays stable across activity updates. iOS
+            // re-renders the whole widget on every state push and crossfades
+            // between snapshots; identical view types make the crossfade
+            // invisible. pauseTime=nil → ticks natively second-by-second on
+            // the Lock Screen with no app wakeups; pauseTime=non-nil → frozen.
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                let anchor: Date = {
+                    if context.state.isRunning, let startedAt = context.state.timerStartedAt {
+                        return liveAnchor(elapsed: context.state.dailyElapsed, startedAt: startedAt)
+                    }
+                    return Date.now.addingTimeInterval(-context.state.dailyElapsed)
+                }()
+                let pause: Date? = context.state.isRunning ? nil : .now
+
+                Text(
+                    timerInterval: anchor...Date.distantFuture,
+                    pauseTime: pause,
+                    countsDown: false,
+                    showsHours: true
+                )
+                .font(.system(size: 40, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(Color.toffeeInk)
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text("OF \(goalHours)H GOAL")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .tracking(1.33)
+                        .textCase(.uppercase)
+                        .foregroundStyle(Color.bronzeMuted)
+                    Text(percentageText)
+                        .font(.system(size: 13, weight: .medium, design: .monospaced))
+                        .monospacedDigit()
+                        .tracking(0.26)
+                        .foregroundStyle(Color.toffeeBrown)
                 }
             }
 
-            // Large timer
-            timerDisplay
+            Spacer().frame(height: 8)
 
-            // Daily goal progress bar
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(.secondary.opacity(0.25))
-                        .frame(height: 14)
-                    Capsule()
-                        .fill(Color.rosyCopper)
-                        .frame(width: geo.size.width * progress, height: 14)
-                }
-            }
-            .frame(height: 14)
+            // ── Progress bar ──────────────────────────────────────────────
+            GoalProgressBar(progress: progress, goalHours: goalHours)
         }
-        .padding()
-        .activityBackgroundTint(Color.toffeeBrown)
+        .padding(EdgeInsets(top: 10, leading: 18, bottom: 10, trailing: 20))
+        .overlay(
+            ContainerRelativeShape()
+                .strokeBorder(Color.white.opacity(0.5), lineWidth: 1)
+        )
+        .activityBackgroundTint(Color.eggshellDeep.opacity(0.78))
     }
 }
 
@@ -217,6 +293,7 @@ struct LSATTimerLiveActivity: Widget {
             let progress = context.state.dailyGoal > 0
                 ? min(1.0, context.state.dailyElapsed / context.state.dailyGoal)
                 : 0.0
+            let goalHours = max(1, Int(context.state.dailyGoal / 3600))
 
             return DynamicIsland {
                 // ── Expanded (long-press) ──────────────────────────────────
@@ -225,18 +302,19 @@ struct LSATTimerLiveActivity: Widget {
                         .padding(.leading, 6)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    if context.state.isRunning, let startedAt = context.state.timerStartedAt {
-                        Text(
-                            liveAnchor(elapsed: context.state.dailyElapsed, startedAt: startedAt),
-                            style: .timer
-                        )
-                        .font(.system(.title2, design: .rounded, weight: .bold))
-                        .monospacedDigit()
-                    } else {
-                        Text(fmtElapsed(context.state.dailyElapsed))
-                            .font(.system(.title2, design: .rounded, weight: .bold))
-                            .monospacedDigit()
+                    Group {
+                        if context.state.isRunning, let startedAt = context.state.timerStartedAt {
+                            Text(
+                                liveAnchor(elapsed: context.state.dailyElapsed, startedAt: startedAt),
+                                style: .timer
+                            )
+                        } else {
+                            Text(fmtElapsed(context.state.dailyElapsed))
+                        }
                     }
+                    .font(.system(size: 20, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.copperSoft)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     Button(intent: ToggleTimerIntent()) {
@@ -246,15 +324,13 @@ struct LSATTimerLiveActivity: Widget {
                                 : "play.circle.fill"
                         )
                         .font(.title2)
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Color.rosyCopper)
                     }
                     .buttonStyle(.plain)
                     .padding(.trailing, 6)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    ProgressView(value: progress)
-                        .progressViewStyle(.linear)
-                        .tint(Color.rosyCopper)
+                    GoalProgressBar(progress: progress, goalHours: goalHours)
                         .padding(.horizontal, 8)
                         .padding(.bottom, 4)
                 }
@@ -263,24 +339,35 @@ struct LSATTimerLiveActivity: Widget {
             } compactLeading: {
                 AppIconView(size: 16)
             } compactTrailing: {
-                if context.state.isRunning, let startedAt = context.state.timerStartedAt {
-                    Text(
-                        liveAnchor(elapsed: context.state.dailyElapsed, startedAt: startedAt),
-                        style: .timer
-                    )
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                HStack(spacing: 4) {
+                    Group {
+                        if context.state.isRunning, let startedAt = context.state.timerStartedAt {
+                            Text(
+                                liveAnchor(elapsed: context.state.dailyElapsed, startedAt: startedAt),
+                                style: .timer
+                            )
+                        } else {
+                            Text(fmtElapsed(context.state.dailyElapsed))
+                        }
+                    }
+                    .font(.system(size: 15, weight: .medium))
                     .monospacedDigit()
-                    .foregroundStyle(.primary)
-                } else {
-                    Text(fmtElapsed(context.state.dailyElapsed))
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(.primary)
+                    .foregroundStyle(Color.copperSoft)
+
+                    if context.state.isRunning {
+                        Circle()
+                            .fill(Color.rosyCopper)
+                            .frame(width: 5, height: 5)
+                            .shadow(color: Color.rosyCopper.opacity(0.6), radius: 3, x: 0, y: 0)
+                    }
                 }
 
             // ── Minimal (competing Live Activity is also showing) ──────────
             } minimal: {
-                ProgressRingView(progress: progress, isRunning: context.state.isRunning, size: 26)
+                Circle()
+                    .fill(Color.rosyCopper)
+                    .frame(width: 5, height: 5)
+                    .shadow(color: Color.rosyCopper.opacity(0.6), radius: 3, x: 0, y: 0)
             }
         }
     }

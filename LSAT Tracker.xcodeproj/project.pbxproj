@@ -63,17 +63,11 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		FA284E1C2F54DC9400726B60 /* Exceptions for "LSAT Tracker" folder in "LSAT Tracker" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				"LSAT-Tracker-Info.plist",
-			);
-			target = FAA686DA2F52427900481D93 /* LSAT Tracker */;
-		};
 		FA284E1E2F54DD4E00726B60 /* Exceptions for "LSAT Tracker" folder in "LSAT Timer WidgetExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Models/LSATTimerAttributes.swift,
+				Models/ToggleTimerIntent.swift,
 				Theme.swift,
 			);
 			target = FA7311262F52A42600E4A16C /* LSAT Timer WidgetExtension */;
@@ -99,7 +93,6 @@
 		FAA686DD2F52427900481D93 /* LSAT Tracker */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				FA284E1C2F54DC9400726B60 /* Exceptions for "LSAT Tracker" folder in "LSAT Tracker" target */,
 				FA284E1E2F54DD4E00726B60 /* Exceptions for "LSAT Tracker" folder in "LSAT Timer WidgetExtension" target */,
 			);
 			path = "LSAT Tracker";

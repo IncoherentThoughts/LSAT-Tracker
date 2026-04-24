@@ -22,6 +22,11 @@ final class TimerManager {
     private(set) var isRunning: Bool = false
     private(set) var tick: Int = 0
 
+    // MARK: - Session persistence hook
+    /// Called at critical points (pause, background, 4am boundary) so the
+    /// StudyStore can write a StudySession record. Set by LSAT_TrackerApp.
+    var persistSession: ((Date, TimeInterval) -> Void)?
+
     // MARK: - Private
     private var timerStartedAt: Date?
     private var displayTimer: Timer?
@@ -67,6 +72,7 @@ final class TimerManager {
         suite.set(snapshotDaily, forKey: TimerKey.dailyElapsed)
         suite.set(snapshotTotal, forKey: TimerKey.totalElapsed)
         suite.set(now, forKey: TimerKey.timerStartedAt)
+        persistCurrentDaySession()
     }
 
     /// Call on every app foreground: check 4am boundary + rehydrate
@@ -77,6 +83,7 @@ final class TimerManager {
         if isRunning {
             startDisplayTimer()
         }
+        persistCurrentDaySession()
         #if os(iOS)
         if liveActivity == nil {
             liveActivity = Activity<LSATTimerAttributes>.activities.first
@@ -111,6 +118,7 @@ final class TimerManager {
         isRunning = false
         stopDisplayTimer()
         persistState()
+        persistCurrentDaySession()
         #if os(iOS)
         updateLiveActivity()
         #endif
@@ -177,6 +185,32 @@ final class TimerManager {
         timerStartedAt = suite.object(forKey: TimerKey.timerStartedAt) as? Date
     }
 
+    /// Calendar date (startOfDay) that the current `dailyElapsed` should be
+    /// recorded under. The timer's "day" runs from 4am to 4am, so the correct
+    /// calendar date is startOfDay(lastResetDate) when available, otherwise
+    /// the most recent 4am anchor before now.
+    private func currentStudyDayDate() -> Date {
+        let cal = Calendar.current
+        if let lastReset = suite.object(forKey: TimerKey.lastResetDate) as? Date,
+           lastReset > .distantPast {
+            return cal.startOfDay(for: lastReset)
+        }
+        let now = Date()
+        var comps = cal.dateComponents([.year, .month, .day], from: now)
+        comps.hour = 4
+        comps.minute = 0
+        comps.second = 0
+        let today4am = cal.date(from: comps) ?? now
+        let anchor = now < today4am ? today4am.addingTimeInterval(-86400) : today4am
+        return cal.startOfDay(for: anchor)
+    }
+
+    private func persistCurrentDaySession() {
+        let duration = computedDaily
+        guard duration > 0 else { return }
+        persistSession?(currentStudyDayDate(), duration)
+    }
+
     private func persistState() {
         suite.set(dailyElapsed, forKey: TimerKey.dailyElapsed)
         suite.set(totalElapsed, forKey: TimerKey.totalElapsed)
@@ -227,6 +261,17 @@ final class TimerManager {
 
         let savedTotal = suite.double(forKey: TimerKey.totalElapsed)
         let newTotal = savedTotal - postBoundaryInTotal + preBoundaryElapsed
+
+        // Persist the departing day's session before zeroing. `dailyElapsed` in
+        // UserDefaults represents accumulated study for the day that *started*
+        // at lastReset's 4am anchor; add the pre-boundary in-flight slice if
+        // the timer was running across the boundary.
+        let savedDaily = suite.double(forKey: TimerKey.dailyElapsed)
+        let endedDayDuration = savedDaily + preBoundaryElapsed
+        if endedDayDuration > 0, lastReset > .distantPast {
+            let endedDay = calendar.startOfDay(for: lastReset)
+            persistSession?(endedDay, endedDayDuration)
+        }
 
         suite.set(0.0, forKey: TimerKey.dailyElapsed)
         suite.set(newTotal, forKey: TimerKey.totalElapsed)

@@ -1,15 +1,15 @@
 import SwiftUI
 
 enum Tab: Int, CaseIterable {
-    case settings = 0
+    case stats    = 0
     case timer    = 1
-    case stats    = 2
+    case settings = 2
 
     var icon: String {
         switch self {
+        case .stats:    return "chart.bar"
+        case .timer:    return "timer"
         case .settings: return "person"
-        case .timer:    return "circle.fill"
-        case .stats:    return "chart.bar.fill"
         }
     }
 }
@@ -19,46 +19,51 @@ struct MainTabView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            Group {
-                switch selectedTab {
-                case .settings: SettingsView()
-                case .timer:    TimerView()
-                case .stats:    StatsView()
-                }
+            // Native paging gives interactive drag-with-snap: you can hold,
+            // drag halfway, and release to snap to whichever side you're
+            // majority on. Vertical scrolling inside child views still works
+            // because TabView only claims horizontal pans.
+            TabView(selection: $selectedTab) {
+                StatsView().tag(Tab.stats)
+                TimerView().tag(Tab.timer)
+                SettingsView().tag(Tab.settings)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .ignoresSafeArea(.keyboard)
 
-            BottomNavBar(selectedTab: $selectedTab)
+            FloatingTabBar(selectedTab: $selectedTab)
+                .padding(.bottom, 22)
         }
         .background(Color.eggshell.ignoresSafeArea())
-        .ignoresSafeArea(edges: .bottom)
     }
 }
 
-// MARK: - Bottom Nav Bar
+// MARK: - Floating Tab Bar
 
-private struct BottomNavBar: View {
+private struct FloatingTabBar: View {
     @Binding var selectedTab: Tab
 
     var body: some View {
-        HStack(alignment: .center) {
-            NavButton(tab: .stats, selectedTab: $selectedTab)
-            Spacer()
-            NavButton(tab: .timer, selectedTab: $selectedTab)
-            Spacer()
-            NavButton(tab: .settings, selectedTab: $selectedTab)
+        HStack(spacing: 4) {
+            ForEach([Tab.stats, .timer, .settings], id: \.self) { tab in
+                TabButton(tab: tab, selectedTab: $selectedTab)
+            }
         }
-        .padding(.horizontal, 48)
-        .padding(.top, 12)
-        .padding(.bottom, 28)
+        .padding(6)
         .background(
-            Color.toffeeBrown
-                .shadow(color: .toffeeBrown.opacity(0.4), radius: 16, y: -6)
+            Capsule()
+                .fill(.ultraThinMaterial)
+                .overlay(Capsule().fill(Color.eggshell.opacity(0.35)))
         )
+        .overlay(
+            Capsule().stroke(Color.hairline, lineWidth: 1)
+        )
+        .shadow(color: Color.toffeeBrown.opacity(0.18), radius: 18, x: 0, y: 12)
+        .shadow(color: Color.toffeeBrown.opacity(0.08), radius: 4, x: 0, y: 2)
     }
 }
 
-private struct NavButton: View {
+private struct TabButton: View {
     let tab: Tab
     @Binding var selectedTab: Tab
 
@@ -66,25 +71,27 @@ private struct NavButton: View {
 
     var body: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.25)) {
+            withAnimation(.easeInOut(duration: 0.2)) {
                 selectedTab = tab
             }
         } label: {
-            if tab == .timer {
-                ZStack {
-                    Circle()
-                        .fill(isSelected ? Color.rosyCopper : Color.eggshell.opacity(0.25))
-                        .frame(width: 48, height: 48)
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundColor(isSelected ? .eggshell : .lightBronze)
-                }
-            } else {
+            ZStack {
                 Image(systemName: tab.icon)
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundColor(isSelected ? .rosyCopper : .lightBronze)
-                    .frame(width: 48, height: 48)
+                    .font(.system(size: 20, weight: .regular))
+                    .foregroundColor(isSelected ? .toffeeInk : .bronzeMuted)
+
+                // Active indicator dot
+                VStack {
+                    Spacer()
+                    Circle()
+                        .fill(Color.rosyCopper)
+                        .frame(width: 4, height: 4)
+                        .opacity(isSelected ? 1 : 0)
+                        .padding(.bottom, 4)
+                }
             }
+            .frame(width: 56, height: 44)
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
     }
