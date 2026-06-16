@@ -39,6 +39,14 @@ final class TimerManager {
     init() {
         suite = UserDefaults(suiteName: appGroupSuite) ?? .standard
         rehydrate()
+        registerForStateChanges()
+    }
+
+    deinit {
+        CFNotificationCenterRemoveEveryObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            Unmanaged.passUnretained(self).toOpaque()
+        )
     }
 
     // MARK: - Computed display values (add live interval if running)
@@ -85,11 +93,53 @@ final class TimerManager {
         }
         persistCurrentDaySession()
         #if os(iOS)
-        if liveActivity == nil {
-            liveActivity = Activity<LSATTimerAttributes>.activities.first
+        // Foregrounding is engagement: refresh staleDate via update() if an
+        // active activity exists. Smooth, no flicker. Don't recreate ended
+        // activities — the user's already in the app.
+        if let active = Activity<LSATTimerAttributes>.activities
+            .first(where: { $0.activityState == .active }) {
+            liveActivity = active
+            Task { await active.update(contentForCurrentState()) }
         }
-        updateLiveActivity()
         #endif
+    }
+
+    // MARK: - Cross-process sync (Live Activity intent → app)
+
+    /// Subscribe to the Darwin notification `ToggleTimerIntent` posts after it
+    /// writes new state to the shared suite. The C callback can't capture
+    /// `self`, so we hand it an unretained opaque pointer and recover the
+    /// instance inside. Delivered on the main run loop; we hop to main anyway
+    /// to be safe before touching observed state.
+    private func registerForStateChanges() {
+        let observer = Unmanaged.passUnretained(self).toOpaque()
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            observer,
+            { _, observer, _, _, _ in
+                guard let observer else { return }
+                let manager = Unmanaged<TimerManager>.fromOpaque(observer).takeUnretainedValue()
+                DispatchQueue.main.async { manager.reconcileFromSharedState() }
+            },
+            timerStateChangedNotification as CFString,
+            nil,
+            .deliverImmediately
+        )
+    }
+
+    /// Adopt state the Live Activity intent just wrote to the shared suite.
+    /// Pure read + local display-timer sync — it must NOT write back to the
+    /// suite or push a Live Activity update, since the intent is the canonical
+    /// writer here and already did both. Writing back would clobber the
+    /// intent's values and could ping-pong.
+    func reconcileFromSharedState() {
+        rehydrate()
+        stopDisplayTimer()
+        if isRunning {
+            startDisplayTimer()
+        }
+        // Nudge computed values so the UI reflects the new baseline at once.
+        tick += 1
     }
 
     // MARK: - Controls
@@ -105,7 +155,7 @@ final class TimerManager {
         suite.set(startDate, forKey: TimerKey.timerStartedAt)
         startDisplayTimer()
         #if os(iOS)
-        startOrUpdateLiveActivity()
+        presentRunningActivity()
         #endif
     }
 
@@ -120,7 +170,9 @@ final class TimerManager {
         persistState()
         persistCurrentDaySession()
         #if os(iOS)
-        updateLiveActivity()
+        // Update in place — smooth crossfade to paused content. Activity
+        // stays .active so the next resume can update() without flicker.
+        updateLiveActivityInPlace()
         #endif
     }
 
@@ -317,55 +369,67 @@ final class TimerManager {
         )
     }
 
-    private func startOrUpdateLiveActivity() {
-        if let existing = liveActivity, existing.activityState == .active {
-            updateLiveActivity()
+    private func contentForCurrentState() -> ActivityContent<LSATTimerAttributes.ContentState> {
+        let dismissAt = Date.now.addingTimeInterval(liveActivityIdleTimeout)
+        return ActivityContent(state: makeContentState(), staleDate: dismissAt)
+    }
+
+    /// Bring the Live Activity to a running .active state. Updates an existing
+    /// active activity in place (smooth crossfade) or requests a fresh one if
+    /// none exists (e.g. after the previous one fell out of dismissal grace).
+    private func presentRunningActivity() {
+        let allActivities = Activity<LSATTimerAttributes>.activities
+        if let active = allActivities.first(where: { $0.activityState == .active }) {
+            liveActivity = active
+            Task { await active.update(contentForCurrentState()) }
             return
+        }
+        // No active — clear any ghosts in dismissal grace so we don't stack
+        for ghost in allActivities {
+            Task { await ghost.end(nil, dismissalPolicy: .immediate) }
         }
         let authInfo = ActivityAuthorizationInfo()
-        print("[LiveActivity] areActivitiesEnabled: \(authInfo.areActivitiesEnabled)")
         guard authInfo.areActivitiesEnabled else {
-            print("[LiveActivity] Blocked: Live Activities disabled by user or system.")
+            print("[LiveActivity] Blocked: Live Activities disabled.")
             return
         }
-        let content = ActivityContent(
-            state: makeContentState(),
-            staleDate: .now.addingTimeInterval(8 * 3600)
-        )
         do {
             liveActivity = try Activity<LSATTimerAttributes>.request(
                 attributes: LSATTimerAttributes(),
-                content: content
+                content: contentForCurrentState()
             )
-            print("[LiveActivity] Started successfully. ID: \(liveActivity?.id ?? "nil")")
-            print("[LiveActivity] Activity state: \(String(describing: liveActivity?.activityState))")
-            print("[LiveActivity] All active activities count: \(Activity<LSATTimerAttributes>.activities.count)")
+            print("[LiveActivity] Started")
         } catch {
-            print("[LiveActivity] Failed to start: \(error)")
+            print("[LiveActivity] request failed: \(error)")
         }
     }
 
-    private func updateLiveActivity() {
-        // Always re-scan in case the activity reference is stale
-        liveActivity = Activity<LSATTimerAttributes>.activities.first(where: { $0.activityState == .active })
-        guard let activity = liveActivity else { return }
-        let content = ActivityContent(
-            state: makeContentState(),
-            staleDate: .now.addingTimeInterval(8 * 3600)
-        )
-        Task { await activity.update(content) }
+    /// Smoothly update the Live Activity in place. Used for both pause and
+    /// resume so neither transition triggers a teardown/recreate flicker.
+    /// Auto-dismissal is left to the 30-min staleDate — keeping the activity
+    /// .active means update() always works on the next state change.
+    private func updateLiveActivityInPlace() {
+        let active = Activity<LSATTimerAttributes>.activities
+            .first(where: { $0.activityState == .active })
+        guard let active else { return }
+        liveActivity = active
+        Task { await active.update(contentForCurrentState()) }
     }
 
+    /// End every Live Activity, not just the one held in `liveActivity` — an
+    /// activity started from the Lock Screen (via the intent) is owned by a
+    /// different launch and won't be in our stored reference, so relying on it
+    /// would orphan the widget on a daily/total reset.
     private func endLiveActivity() {
-        guard let activity = liveActivity else { return }
         let finalState = LSATTimerAttributes.ContentState(
             dailyElapsed: 0, isRunning: false, timerStartedAt: nil, dailyGoal: currentDailyGoal
         )
+        let content = ActivityContent(state: finalState, staleDate: .now)
+        let activities = Activity<LSATTimerAttributes>.activities
         Task {
-            await activity.end(
-                ActivityContent(state: finalState, staleDate: .now),
-                dismissalPolicy: .immediate
-            )
+            for activity in activities {
+                await activity.end(content, dismissalPolicy: .immediate)
+            }
         }
         liveActivity = nil
     }

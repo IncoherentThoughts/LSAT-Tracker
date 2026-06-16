@@ -56,16 +56,54 @@ struct ToggleTimerIntent: LiveActivityIntent {
             timerStartedAt: newStartedAt,
             dailyGoal: dailyGoal
         )
-        let content = ActivityContent(
-            state: newState,
-            staleDate: .now.addingTimeInterval(8 * 3600)
-        )
+        let dismissAt = Date.now.addingTimeInterval(liveActivityIdleTimeout)
+        let content = ActivityContent(state: newState, staleDate: dismissAt)
 
         let activities = Activity<LSATTimerAttributes>.activities
-        print("[ToggleIntent] pushing update to \(activities.count) activity(ies) → isRunning=\(newIsRunning)")
-        for activity in activities {
-            await activity.update(content)
+        // A `.stale` activity is still on screen (just flagged old), so it must
+        // be refreshed too — otherwise a pause tap on a stale widget would do
+        // nothing and leave it showing the running state. update() with a fresh
+        // staleDate also brings it back to .active.
+        let updatable = activities.filter {
+            $0.activityState == .active || $0.activityState == .stale
         }
+        print("[ToggleIntent] updatable=\(updatable.count) total=\(activities.count) → newIsRunning=\(newIsRunning)")
+
+        // Update in place — smooth for both pause and resume since the
+        // activity stays on screen across state transitions. Only request a
+        // fresh one when resuming with nothing on screen to update.
+        if !updatable.isEmpty {
+            for activity in updatable {
+                await activity.update(content)
+            }
+        } else if newIsRunning {
+            for ghost in activities {
+                await ghost.end(nil, dismissalPolicy: .immediate)
+            }
+            let authInfo = ActivityAuthorizationInfo()
+            if authInfo.areActivitiesEnabled {
+                do {
+                    _ = try Activity<LSATTimerAttributes>.request(
+                        attributes: LSATTimerAttributes(),
+                        content: content
+                    )
+                } catch {
+                    print("[ToggleIntent] request failed: \(error)")
+                }
+            }
+        }
+
+        // Tell the running app to adopt the state we just wrote, so its
+        // in-memory TimerManager and on-screen timer don't diverge from the
+        // widget. Delivered to all processes — including the app's own when it
+        // is foregrounded (e.g. a Dynamic Island tap while using the app).
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName(timerStateChangedNotification as CFString),
+            nil,
+            nil,
+            true
+        )
         return .result()
     }
 }

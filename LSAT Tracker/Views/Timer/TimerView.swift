@@ -40,30 +40,8 @@ struct TimerView: View {
 
             Spacer()
 
-            // Centered timer stack with dashed ring backdrop
-            ZStack {
-                // Dashed ring: rotates + pulses while running, freezes on pause.
-                // TimelineView(.animation(paused:)) drives both effects from the
-                // current date so the last frame stays put when paused — no
-                // dangling repeatForever animations to manage.
-                TimelineView(.animation(paused: !timer.isRunning)) { context in
-                    let t = context.date.timeIntervalSinceReferenceDate
-                    let degrees = (t * 18).truncatingRemainder(dividingBy: 360)
-                    let pulse = 1.0 + sin(t * 2.2) * 0.025
-                    Circle()
-                        .stroke(
-                            Color.rosyCopper.opacity(timer.isRunning ? 0.55 : 0.32),
-                            style: StrokeStyle(lineWidth: 1.6, lineCap: .round, dash: [3, 9])
-                        )
-                        .frame(width: 340, height: 340)
-                        .scaleEffect(pulse)
-                        .rotationEffect(.degrees(degrees))
-                }
-                .frame(width: 340, height: 340)
-                .animation(.easeInOut(duration: 0.35), value: timer.isRunning)
-                .offset(y: -30)
-
-                VStack(spacing: 0) {
+            // Centered timer stack
+            VStack(spacing: 0) {
                     TimerDigits(elapsed: timer.computedDaily)
 
                     // All-time row
@@ -107,7 +85,6 @@ struct TimerView: View {
                     .frame(width: 200)
                     .padding(.top, 28)
                 }
-            }
 
             // Play/Pause button
             PlayPauseButton(isRunning: timer.isRunning, scale: buttonScale) {

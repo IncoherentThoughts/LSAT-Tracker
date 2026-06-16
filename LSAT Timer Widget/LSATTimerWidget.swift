@@ -132,8 +132,44 @@ private struct TimerDigitsView: View {
 
 // MARK: - Goal Progress Bar
 
+/// Custom ProgressViewStyle so we keep the bar's look while delegating value
+/// updates to the system. When the bar is driven by `ProgressView(timerInterval:)`,
+/// `configuration.fractionCompleted` ticks natively on the Lock Screen — no
+/// activity.update() needed.
+private struct LSATProgressBarStyle: ProgressViewStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        let progress = min(1.0, max(0.0, configuration.fractionCompleted ?? 0))
+        return GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.toffeeBrown.opacity(0.18))
+                    .frame(height: 4)
+                Capsule()
+                    .fill(LinearGradient(
+                        colors: [Color.rosyCopper, Color.copperSoft],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    ))
+                    .frame(width: max(0, geo.size.width * progress), height: 4)
+                    .shadow(color: Color.rosyCopper.opacity(0.4), radius: 4, x: 0, y: 0)
+                ForEach([0.25, 0.5, 0.75] as [Double], id: \.self) { frac in
+                    Rectangle()
+                        .fill(Color.toffeeBrown.opacity(0.35))
+                        .frame(width: 1, height: 8)
+                        .offset(x: geo.size.width * frac - 0.5)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(height: 8)
+    }
+}
+
 private struct GoalProgressBar: View {
-    let progress: Double
+    let isRunning: Bool
+    let dailyElapsed: TimeInterval
+    let dailyGoal: TimeInterval
+    let timerStartedAt: Date?
     let goalHours: Int
 
     private var axisLabels: [String] {
@@ -146,32 +182,32 @@ private struct GoalProgressBar: View {
         }
     }
 
+    private var staticProgress: Double {
+        guard dailyGoal > 0 else { return 0 }
+        return min(1.0, dailyElapsed / dailyGoal)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.toffeeBrown.opacity(0.18))
-                        .frame(height: 4)
-                    Capsule()
-                        .fill(LinearGradient(
-                            colors: [Color.rosyCopper, Color.copperSoft],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ))
-                        .frame(width: max(0, geo.size.width * progress), height: 4)
-                        .shadow(color: Color.rosyCopper.opacity(0.4), radius: 4, x: 0, y: 0)
-                        .animation(.easeInOut(duration: 0.4), value: progress)
-                    ForEach([0.25, 0.5, 0.75] as [Double], id: \.self) { frac in
-                        Rectangle()
-                            .fill(Color.toffeeBrown.opacity(0.35))
-                            .frame(width: 1, height: 8)
-                            .offset(x: geo.size.width * frac - 0.5)
-                    }
+            Group {
+                if isRunning, let startedAt = timerStartedAt, dailyGoal > 0 {
+                    // Anchor chosen so that at `now` the fraction equals
+                    // dailyElapsed/dailyGoal, then it ticks forward to 100%
+                    // at anchor + dailyGoal — the system updates the
+                    // fraction on the Lock Screen with no app wakeups.
+                    let anchor = startedAt.addingTimeInterval(-dailyElapsed)
+                    let endDate = anchor.addingTimeInterval(dailyGoal)
+                    ProgressView(
+                        timerInterval: anchor...endDate,
+                        countsDown: false,
+                        label: { EmptyView() },
+                        currentValueLabel: { EmptyView() }
+                    )
+                } else {
+                    ProgressView(value: staticProgress)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(height: 8)
+            .progressViewStyle(LSATProgressBarStyle())
 
             HStack {
                 ForEach(Array(axisLabels.enumerated()), id: \.offset) { i, label in
@@ -272,7 +308,13 @@ struct LSATLockScreenView: View {
             Spacer().frame(height: 8)
 
             // ── Progress bar ──────────────────────────────────────────────
-            GoalProgressBar(progress: progress, goalHours: goalHours)
+            GoalProgressBar(
+                isRunning: context.state.isRunning,
+                dailyElapsed: context.state.dailyElapsed,
+                dailyGoal: context.state.dailyGoal,
+                timerStartedAt: context.state.timerStartedAt,
+                goalHours: goalHours
+            )
         }
         .padding(EdgeInsets(top: 10, leading: 18, bottom: 10, trailing: 20))
         .overlay(
@@ -290,9 +332,6 @@ struct LSATTimerLiveActivity: Widget {
         ActivityConfiguration(for: LSATTimerAttributes.self) { context in
             LSATLockScreenView(context: context)
         } dynamicIsland: { context in
-            let progress = context.state.dailyGoal > 0
-                ? min(1.0, context.state.dailyElapsed / context.state.dailyGoal)
-                : 0.0
             let goalHours = max(1, Int(context.state.dailyGoal / 3600))
 
             return DynamicIsland {
@@ -330,9 +369,15 @@ struct LSATTimerLiveActivity: Widget {
                     .padding(.trailing, 6)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    GoalProgressBar(progress: progress, goalHours: goalHours)
-                        .padding(.horizontal, 8)
-                        .padding(.bottom, 4)
+                    GoalProgressBar(
+                        isRunning: context.state.isRunning,
+                        dailyElapsed: context.state.dailyElapsed,
+                        dailyGoal: context.state.dailyGoal,
+                        timerStartedAt: context.state.timerStartedAt,
+                        goalHours: goalHours
+                    )
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
                 }
 
             // ── Compact (this is the only Live Activity) ───────────────────
