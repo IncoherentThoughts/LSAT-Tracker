@@ -12,6 +12,11 @@ private enum TimerKey {
     static let timerRunning  = "timerRunning"
     static let timerStartedAt = "timerStartedAt"
     static let dailyGoal     = "dailyGoal"
+    // Written by ToggleTimerIntent on a Lock Screen pause: the endpoints of
+    // the interval it baked into dailyElapsed without boundary logic, so
+    // check4amBoundary() can split that interval retroactively.
+    static let lastPausedStartedAt = "lastPausedStartedAt"
+    static let lastPausedAt  = "lastPausedAt"
 }
 
 @Observable
@@ -33,6 +38,22 @@ final class TimerManager {
     private let suite: UserDefaults
     #if os(iOS)
     private var liveActivity: Activity<LSATTimerAttributes>?
+    /// Tail of a FIFO chain that serializes EVERY Live Activity mutation
+    /// (update, end, request). Rapid pause→resume→pause otherwise interleaves:
+    /// an in-flight request() can land after a later end() enumerated the
+    /// activity list, resurrecting a ticking RUNNING card that nothing is
+    /// scheduled to remove. Ops must also enumerate Activity.activities
+    /// INSIDE their queued block — a snapshot taken at enqueue time can miss
+    /// a card the prior op is about to create.
+    private var activityPipeline: Task<Void, Never>?
+
+    private func enqueueActivityOp(_ op: @escaping () async -> Void) {
+        let prior = activityPipeline
+        activityPipeline = Task {
+            await prior?.value
+            await op()
+        }
+    }
     #endif
 
     // MARK: - Init
@@ -69,6 +90,12 @@ final class TimerManager {
     /// point to now — prevents double-counting on the next foreground rehydrate.
     func onBackground() {
         guard isRunning else { return }
+        // The app can stay foregrounded across 4am (macOS window left open,
+        // iOS with auto-lock off), in which case onForeground's boundary
+        // check is stale. Roll the boundary first — it re-anchors
+        // timerStartedAt to 4am — so the snapshot below bakes only
+        // post-boundary time into the new day.
+        check4amBoundary()
         let now = Date()
         let snapshotDaily = computedDaily
         let snapshotTotal = computedTotal
@@ -93,13 +120,29 @@ final class TimerManager {
         }
         persistCurrentDaySession()
         #if os(iOS)
-        // Foregrounding is engagement: refresh staleDate via update() if an
-        // active activity exists. Smooth, no flicker. Don't recreate ended
-        // activities — the user's already in the app.
-        if let active = Activity<LSATTimerAttributes>.activities
-            .first(where: { $0.activityState == .active }) {
-            liveActivity = active
-            Task { await active.update(contentForCurrentState()) }
+        // Reconcile the Lock Screen with the timer state. Activities outlive
+        // the app process (force-quit and even reboot), so in-memory state
+        // proves nothing — enumerate what actually exists every time.
+        if isRunning {
+            // Refresh content on any on-screen activity — including .stale
+            // ones, which update() restores to .active. Smooth, no flicker.
+            // Don't recreate ended activities — the user's already in the app.
+            let content = contentForCurrentState()
+            enqueueActivityOp {
+                let updatable = Activity<LSATTimerAttributes>.updatable
+                guard let first = updatable.first else { return }
+                self.liveActivity = first
+                for activity in updatable {
+                    await activity.update(content)
+                }
+            }
+        } else if !Activity<LSATTimerAttributes>.updatable.isEmpty {
+            // Timer is paused but a live (.active/.stale) card is still up —
+            // an orphan from an older build, a crash, or a missed end(). A
+            // paused card should only ever exist as an *ended* one riding out
+            // its dismissal grace, so kill these outright. This is also what
+            // clears cards stuck on screen from before this fix shipped.
+            endLiveActivity()
         }
         #endif
     }
@@ -153,14 +196,23 @@ final class TimerManager {
         suite.set(totalElapsed, forKey: TimerKey.totalElapsed)
         suite.set(true, forKey: TimerKey.timerRunning)
         suite.set(startDate, forKey: TimerKey.timerStartedAt)
+        // A new running session obsoletes the last pause's breadcrumbs.
+        suite.removeObject(forKey: TimerKey.lastPausedStartedAt)
+        suite.removeObject(forKey: TimerKey.lastPausedAt)
         startDisplayTimer()
         #if os(iOS)
         presentRunningActivity()
         #endif
     }
 
-    func pause() {
+    /// `endingLiveActivity: false` is for the resets, which end the activity
+    /// themselves with .immediate right after — skipping the grace-end here
+    /// avoids two racing end() calls with different dismissal policies.
+    func pause(endingLiveActivity: Bool = true) {
         guard isRunning else { return }
+        // Same foregrounded-across-4am hazard as onBackground(): roll the
+        // boundary first so the interval baked below never spans it.
+        check4amBoundary()
         let interval = timerStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
         dailyElapsed += interval
         totalElapsed += interval
@@ -170,9 +222,14 @@ final class TimerManager {
         persistState()
         persistCurrentDaySession()
         #if os(iOS)
-        // Update in place — smooth crossfade to paused content. Activity
-        // stays .active so the next resume can update() without flicker.
-        updateLiveActivityInPlace()
+        // End with the paused state as final content and a grace-period
+        // dismissal. end() still crossfades the card to the paused content,
+        // and the system removes it after the grace even if the app never
+        // runs again — an update() here would leave the card .active with
+        // nothing ever ending it (Lock Screen ghost for up to 12 hours).
+        if endingLiveActivity {
+            endLiveActivityAfterGrace()
+        }
         #endif
     }
 
@@ -184,7 +241,7 @@ final class TimerManager {
 
     func resetDaily() {
         let wasRunning = isRunning
-        if wasRunning { pause() }
+        if wasRunning { pause(endingLiveActivity: false) }
         dailyElapsed = 0
         suite.set(0.0, forKey: TimerKey.dailyElapsed)
         #if os(iOS)
@@ -195,7 +252,7 @@ final class TimerManager {
 
     func resetTotal() {
         let wasRunning = isRunning
-        if wasRunning { pause() }
+        if wasRunning { pause(endingLiveActivity: false) }
         dailyElapsed = 0
         totalElapsed = 0
         suite.set(0.0, forKey: TimerKey.dailyElapsed)
@@ -319,17 +376,37 @@ final class TimerManager {
         // at lastReset's 4am anchor; add the pre-boundary in-flight slice if
         // the timer was running across the boundary.
         let savedDaily = suite.double(forKey: TimerKey.dailyElapsed)
-        let endedDayDuration = savedDaily + preBoundaryElapsed
+
+        // A Lock Screen pause (ToggleTimerIntent) bakes its full running
+        // interval into dailyElapsed with no boundary logic, leaving the
+        // interval's endpoints in lastPausedStartedAt/lastPausedAt. If that
+        // interval straddled the boundary, the post-boundary slice belongs to
+        // the NEW day: carve it out of the ended day's credit and seed the new
+        // day's dailyElapsed with it. totalElapsed needs no adjustment — the
+        // intent baked both slices there, and both belong in the all-time sum.
+        var carryIntoNewDay: TimeInterval = 0
+        if !wasRunning,
+           let pausedStart = suite.object(forKey: TimerKey.lastPausedStartedAt) as? Date,
+           let pausedAt = suite.object(forKey: TimerKey.lastPausedAt) as? Date,
+           pausedStart < boundary, pausedAt > boundary {
+            carryIntoNewDay = min(max(0, pausedAt.timeIntervalSince(boundary)), savedDaily)
+        }
+
+        let endedDayDuration = savedDaily + preBoundaryElapsed - carryIntoNewDay
         if endedDayDuration > 0, lastReset > .distantPast {
             let endedDay = calendar.startOfDay(for: lastReset)
             persistSession?(endedDay, endedDayDuration)
         }
 
-        suite.set(0.0, forKey: TimerKey.dailyElapsed)
+        suite.set(carryIntoNewDay, forKey: TimerKey.dailyElapsed)
         suite.set(newTotal, forKey: TimerKey.totalElapsed)
         suite.set(now, forKey: TimerKey.lastResetDate)
+        // Consumed by this roll — or obsoleted by it, if the pause didn't span
+        // the boundary just processed.
+        suite.removeObject(forKey: TimerKey.lastPausedStartedAt)
+        suite.removeObject(forKey: TimerKey.lastPausedAt)
 
-        dailyElapsed = 0
+        dailyElapsed = carryIntoNewDay
         totalElapsed = newTotal
 
         // Re-anchor timerStartedAt to the boundary so computedDaily only counts
@@ -370,68 +447,92 @@ final class TimerManager {
     }
 
     private func contentForCurrentState() -> ActivityContent<LSATTimerAttributes.ContentState> {
-        let dismissAt = Date.now.addingTimeInterval(liveActivityIdleTimeout)
-        return ActivityContent(state: makeContentState(), staleDate: dismissAt)
+        let staleAt = Date.now.addingTimeInterval(liveActivityIdleTimeout)
+        return ActivityContent(state: makeContentState(), staleDate: staleAt)
     }
 
     /// Bring the Live Activity to a running .active state. Updates an existing
-    /// active activity in place (smooth crossfade) or requests a fresh one if
-    /// none exists (e.g. after the previous one fell out of dismissal grace).
+    /// on-screen activity in place — .active or .stale, since update() restores
+    /// a stale one to .active with a fresh staleDate (smooth crossfade, no
+    /// end-and-recreate flicker) — or requests a fresh one if none exists.
+    /// Runs on the pipeline so any in-flight end() (pause grace-end, reset
+    /// immediate-end) settles before the update-vs-request decision — and so
+    /// a pause landing right after this one waits for the request() to finish
+    /// and can end the card it created.
     private func presentRunningActivity() {
-        let allActivities = Activity<LSATTimerAttributes>.activities
-        if let active = allActivities.first(where: { $0.activityState == .active }) {
-            liveActivity = active
-            Task { await active.update(contentForCurrentState()) }
-            return
-        }
-        // No active — clear any ghosts in dismissal grace so we don't stack
-        for ghost in allActivities {
-            Task { await ghost.end(nil, dismissalPolicy: .immediate) }
-        }
-        let authInfo = ActivityAuthorizationInfo()
-        guard authInfo.areActivitiesEnabled else {
-            print("[LiveActivity] Blocked: Live Activities disabled.")
-            return
-        }
-        do {
-            liveActivity = try Activity<LSATTimerAttributes>.request(
-                attributes: LSATTimerAttributes(),
-                content: contentForCurrentState()
-            )
-            print("[LiveActivity] Started")
-        } catch {
-            print("[LiveActivity] request failed: \(error)")
+        let content = contentForCurrentState()
+        enqueueActivityOp {
+            let updatable = Activity<LSATTimerAttributes>.updatable
+            if let first = updatable.first {
+                self.liveActivity = first
+                for activity in updatable {
+                    await activity.update(content)
+                }
+                return
+            }
+            // Nothing on screen — clear ended ghosts still riding out their
+            // dismissal grace so we don't stack a new card on top of one.
+            for ghost in Activity<LSATTimerAttributes>.activities {
+                await ghost.end(nil, dismissalPolicy: .immediate)
+            }
+            let authInfo = ActivityAuthorizationInfo()
+            guard authInfo.areActivitiesEnabled else {
+                print("[LiveActivity] Blocked: Live Activities disabled.")
+                return
+            }
+            do {
+                self.liveActivity = try Activity<LSATTimerAttributes>.request(
+                    attributes: LSATTimerAttributes(),
+                    content: content
+                )
+                print("[LiveActivity] Started")
+            } catch {
+                print("[LiveActivity] request failed: \(error)")
+            }
         }
     }
 
-    /// Smoothly update the Live Activity in place. Used for both pause and
-    /// resume so neither transition triggers a teardown/recreate flicker.
-    /// Auto-dismissal is left to the 30-min staleDate — keeping the activity
-    /// .active means update() always works on the next state change.
-    private func updateLiveActivityInPlace() {
-        let active = Activity<LSATTimerAttributes>.activities
-            .first(where: { $0.activityState == .active })
-        guard let active else { return }
-        liveActivity = active
-        Task { await active.update(contentForCurrentState()) }
+    /// End every Live Activity with the paused state as final content, letting
+    /// the SYSTEM remove it `liveActivityIdleTimeout` after the pause. The
+    /// scheduled dismissal doesn't need the app to run again, so the card is
+    /// guaranteed off the Lock Screen even after a force-quit or reboot.
+    /// isEnded=true makes the widget render a static card (no play button —
+    /// an ended activity is a frozen snapshot that intents can't re-render).
+    private func endLiveActivityAfterGrace() {
+        let finalState = LSATTimerAttributes.ContentState(
+            dailyElapsed: dailyElapsed,
+            isRunning: false,
+            timerStartedAt: nil,
+            dailyGoal: currentDailyGoal,
+            isEnded: true
+        )
+        let content = ActivityContent(state: finalState, staleDate: nil)
+        let dismissAt = Date.now.addingTimeInterval(liveActivityIdleTimeout)
+        liveActivity = nil
+        enqueueActivityOp {
+            for activity in Activity<LSATTimerAttributes>.activities {
+                await activity.end(content, dismissalPolicy: .after(dismissAt))
+            }
+        }
     }
 
-    /// End every Live Activity, not just the one held in `liveActivity` — an
-    /// activity started from the Lock Screen (via the intent) is owned by a
-    /// different launch and won't be in our stored reference, so relying on it
-    /// would orphan the widget on a daily/total reset.
+    /// End every Live Activity immediately — not just the one held in
+    /// `liveActivity`: an activity started from the Lock Screen (via the
+    /// intent) is owned by a different launch and won't be in our stored
+    /// reference, so relying on it would orphan the widget on a daily/total
+    /// reset.
     private func endLiveActivity() {
         let finalState = LSATTimerAttributes.ContentState(
-            dailyElapsed: 0, isRunning: false, timerStartedAt: nil, dailyGoal: currentDailyGoal
+            dailyElapsed: 0, isRunning: false, timerStartedAt: nil,
+            dailyGoal: currentDailyGoal, isEnded: true
         )
         let content = ActivityContent(state: finalState, staleDate: .now)
-        let activities = Activity<LSATTimerAttributes>.activities
-        Task {
-            for activity in activities {
+        liveActivity = nil
+        enqueueActivityOp {
+            for activity in Activity<LSATTimerAttributes>.activities {
                 await activity.end(content, dismissalPolicy: .immediate)
             }
         }
-        liveActivity = nil
     }
     #endif
 }

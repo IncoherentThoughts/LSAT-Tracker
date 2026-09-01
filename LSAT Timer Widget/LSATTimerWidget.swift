@@ -66,7 +66,10 @@ private struct WidgetPlayPauseButton: View {
     let isRunning: Bool
 
     var body: some View {
-        Button(intent: ToggleTimerIntent()) {
+        // Pass the desired end state explicitly: if this button was rendered
+        // from a stale snapshot, the intent no-ops instead of inverting the
+        // toggle (a "pause" tap can never start the timer).
+        Button(intent: ToggleTimerIntent(setRunning: !isRunning)) {
             ZStack {
                 Circle()
                     .fill(isRunning ? Color.eggshell.opacity(0.9) : Color.rosyCopper)
@@ -132,39 +135,6 @@ private struct TimerDigitsView: View {
 
 // MARK: - Goal Progress Bar
 
-/// Custom ProgressViewStyle so we keep the bar's look while delegating value
-/// updates to the system. When the bar is driven by `ProgressView(timerInterval:)`,
-/// `configuration.fractionCompleted` ticks natively on the Lock Screen — no
-/// activity.update() needed.
-private struct LSATProgressBarStyle: ProgressViewStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        let progress = min(1.0, max(0.0, configuration.fractionCompleted ?? 0))
-        return GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.toffeeBrown.opacity(0.18))
-                    .frame(height: 4)
-                Capsule()
-                    .fill(LinearGradient(
-                        colors: [Color.rosyCopper, Color.copperSoft],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    ))
-                    .frame(width: max(0, geo.size.width * progress), height: 4)
-                    .shadow(color: Color.rosyCopper.opacity(0.4), radius: 4, x: 0, y: 0)
-                ForEach([0.25, 0.5, 0.75] as [Double], id: \.self) { frac in
-                    Rectangle()
-                        .fill(Color.toffeeBrown.opacity(0.35))
-                        .frame(width: 1, height: 8)
-                        .offset(x: geo.size.width * frac - 0.5)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(height: 8)
-    }
-}
-
 private struct GoalProgressBar: View {
     let isRunning: Bool
     let dailyElapsed: TimeInterval
@@ -187,8 +157,27 @@ private struct GoalProgressBar: View {
         return min(1.0, dailyElapsed / dailyGoal)
     }
 
+    /// 25/50/75% divider marks drawn on top of the native bar. They're static
+    /// decoration, so overlaying them doesn't interfere with the system ticking
+    /// the fill underneath second-by-second on the Lock Screen.
+    private var tickMarks: some View {
+        GeometryReader { geo in
+            ForEach([0.25, 0.5, 0.75] as [Double], id: \.self) { frac in
+                Rectangle()
+                    .fill(Color.toffeeBrown.opacity(0.35))
+                    .frame(width: 1, height: 8)
+                    .position(x: geo.size.width * frac, y: geo.size.height / 2)
+            }
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Use the built-in `.linear` style (NOT a custom ProgressViewStyle):
+            // only the system's own rendering of `ProgressView(timerInterval:)`
+            // keeps ticking on the Lock Screen without app wakeups. A custom
+            // style snapshots `fractionCompleted` once at push time and freezes
+            // the bar while running — that was the bug.
             Group {
                 if isRunning, let startedAt = timerStartedAt, dailyGoal > 0 {
                     // Anchor chosen so that at `now` the fraction equals
@@ -207,7 +196,10 @@ private struct GoalProgressBar: View {
                     ProgressView(value: staticProgress)
                 }
             }
-            .progressViewStyle(LSATProgressBarStyle())
+            .progressViewStyle(.linear)
+            .tint(Color.rosyCopper)
+            .frame(height: 8)
+            .overlay(tickMarks)
 
             HStack {
                 ForEach(Array(axisLabels.enumerated()), id: \.offset) { i, label in
@@ -257,8 +249,29 @@ struct LSATLockScreenView: View {
 
                 Spacer()
 
-                WidgetPlayPauseButton(isRunning: context.state.isRunning)
-                    .offset(y: 4)
+                // An ended card (paused, riding out its dismissal grace) is a
+                // frozen snapshot — a Button(intent:) on it can't re-render,
+                // so it would just look broken. Show a quiet static label
+                // instead; tapping the card still opens the app to resume.
+                if context.state.isEnded == true {
+                    Text("PAUSED")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .tracking(1.33)
+                        .foregroundStyle(Color.bronzeMuted)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(Color.bronzeMuted.opacity(0.45), lineWidth: 1)
+                        )
+                        // Match the 44pt play/pause button footprint so the
+                        // card height doesn't jump at the pause crossfade.
+                        .frame(height: 44)
+                        .offset(y: 4)
+                } else {
+                    WidgetPlayPauseButton(isRunning: context.state.isRunning)
+                        .offset(y: 4)
+                }
             }
 
             Spacer().frame(height: 10)
@@ -297,11 +310,17 @@ struct LSATLockScreenView: View {
                         .tracking(1.33)
                         .textCase(.uppercase)
                         .foregroundStyle(Color.bronzeMuted)
-                    Text(percentageText)
-                        .font(.system(size: 13, weight: .medium, design: .monospaced))
-                        .monospacedDigit()
-                        .tracking(0.26)
-                        .foregroundStyle(Color.toffeeBrown)
+                    // The bar ticks live while running, but a percentage Text
+                    // can't auto-tick (no native API) — it would sit frozen and
+                    // stale beside the moving bar. Show it only when paused, when
+                    // its value is current.
+                    if !context.state.isRunning {
+                        Text(percentageText)
+                            .font(.system(size: 13, weight: .medium, design: .monospaced))
+                            .monospacedDigit()
+                            .tracking(0.26)
+                            .foregroundStyle(Color.toffeeBrown)
+                    }
                 }
             }
 
@@ -356,7 +375,7 @@ struct LSATTimerLiveActivity: Widget {
                     .foregroundStyle(Color.copperSoft)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    Button(intent: ToggleTimerIntent()) {
+                    Button(intent: ToggleTimerIntent(setRunning: !context.state.isRunning)) {
                         Image(
                             systemName: context.state.isRunning
                                 ? "pause.circle.fill"
