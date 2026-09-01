@@ -154,7 +154,10 @@ final class StudyStore {
         decoder.dateDecodingStrategy = .iso8601
         let backup = try decoder.decode(StatsBackup.self, from: data)
 
-        if timer.isRunning { timer.pause() }
+        // Skip the pause's grace-end: it would freeze a PAUSED card showing
+        // the pre-restore elapsed time for 30 minutes. onForeground() below
+        // sees not-running with a live card and ends it immediately instead.
+        if timer.isRunning { timer.pause(endingLiveActivity: false) }
 
         deleteAllSessions()
         guard let context = modelContext else { return }
@@ -244,15 +247,14 @@ final class StudyStore {
         }
     }
 
-    func currentMonthDays(from sessions: [StudySession]) -> [(date: Date, duration: TimeInterval)] {
+    func monthDays(containing date: Date, from sessions: [StudySession]) -> [(date: Date, duration: TimeInterval)] {
         let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        guard let monthInterval = calendar.dateInterval(of: .month, for: today) else { return [] }
+        guard let monthInterval = calendar.dateInterval(of: .month, for: date) else { return [] }
         let daysInMonth = calendar.dateComponents([.day], from: monthInterval.start, to: monthInterval.end).day ?? 30
         let sessionMap = Dictionary(sessions.map { ($0.date, $0.duration) }, uniquingKeysWith: { $1 })
         return (0..<daysInMonth).map { offset in
-            let date = calendar.date(byAdding: .day, value: offset, to: monthInterval.start)!
-            return (date, sessionMap[date] ?? 0)
+            let day = calendar.date(byAdding: .day, value: offset, to: monthInterval.start)!
+            return (day, sessionMap[day] ?? 0)
         }
     }
 }

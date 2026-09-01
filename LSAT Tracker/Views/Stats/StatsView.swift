@@ -6,16 +6,51 @@ struct StatsView: View {
     @Environment(TimerManager.self) private var timer
     @Query(sort: \StudySession.date) private var allSessions: [StudySession]
 
+    @State private var selectedMonth: Date =
+        Calendar.current.dateInterval(of: .month, for: Date())?.start ?? Date()
+
+    private var calendar: Calendar { Calendar.current }
+
     private var monthEyebrow: String {
         let f = DateFormatter()
         f.dateFormat = "MMM yyyy"
         return f.string(from: Date())
     }
 
-    private var monthShort: String {
-        let f = DateFormatter()
-        f.dateFormat = "MMM"
-        return f.string(from: Date())
+    private var currentMonthStart: Date {
+        calendar.dateInterval(of: .month, for: Date())?.start ?? calendar.startOfDay(for: Date())
+    }
+
+    private var isCurrentMonth: Bool {
+        calendar.isDate(selectedMonth, equalTo: Date(), toGranularity: .month)
+    }
+
+    private var earliestMonthStart: Date {
+        guard let first = allSessions.first?.date,
+              let start = calendar.dateInterval(of: .month, for: first)?.start
+        else { return currentMonthStart }
+        return start
+    }
+
+    private var canGoBack: Bool { selectedMonth > earliestMonthStart }
+    private var canGoForward: Bool { !isCurrentMonth }
+
+    private func shiftMonth(by delta: Int) {
+        guard let target = calendar.date(byAdding: .month, value: delta, to: selectedMonth) else { return }
+        withAnimation(.easeInOut(duration: 0.3)) {
+            selectedMonth = min(max(target, earliestMonthStart), currentMonthStart)
+        }
+    }
+
+    private var heatmapTitle: String {
+        if isCurrentMonth { return "This month" }
+        return calendar.isDate(selectedMonth, equalTo: Date(), toGranularity: .year)
+            ? selectedMonth.formatted(.dateTime.month(.wide))
+            : selectedMonth.formatted(.dateTime.month(.wide).year())
+    }
+
+    private var selectedMonthEyebrow: String {
+        selectedMonth.formatted(.dateTime.month(.abbreviated).year())
     }
 
     var body: some View {
@@ -54,9 +89,14 @@ struct StatsView: View {
                 }
                 .padding(.bottom, 14)
 
-                // This month heatmap
-                StatCardContainer(title: "This month", trailing: monthShort) {
-                    MonthlyHeatmap(data: todayOverridden(store.currentMonthDays(from: allSessions)))
+                // Monthly heatmap with month navigation
+                PolishCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        monthNavigationHeader
+                        MonthlyHeatmap(data: todayOverridden(store.monthDays(containing: selectedMonth, from: allSessions)))
+                            .id(selectedMonth)
+                            .transition(.opacity)
+                    }
                 }
                 .padding(.bottom, 14)
 
@@ -82,6 +122,46 @@ struct StatsView: View {
         return days.map { entry in
             entry.date == today ? (entry.date, max(entry.duration, timer.computedDaily)) : entry
         }
+    }
+
+    private var monthNavigationHeader: some View {
+        HStack(alignment: .center, spacing: 0) {
+            Text(heatmapTitle)
+                .sectionHeaderStyle()
+                .contentTransition(.opacity)
+            Spacer(minLength: 8)
+            chevronButton("chevron.left", label: "Previous month", enabled: canGoBack) {
+                shiftMonth(by: -1)
+            }
+            Text(selectedMonthEyebrow)
+                .eyebrowStyle()
+                .contentTransition(.numericText())
+                .frame(minWidth: 60)
+            chevronButton("chevron.right", label: "Next month", enabled: canGoForward) {
+                shiftMonth(by: 1)
+            }
+        }
+        // Compact header row; the 44pt tap targets overflow it vertically over
+        // non-interactive card padding. Negative trailing padding optically aligns
+        // the right chevron with other cards' trailing eyebrows.
+        .frame(height: 24)
+        .padding(.trailing, -14)
+    }
+
+    private func chevronButton(
+        _ systemName: String, label: String, enabled: Bool, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(enabled ? .toffeeBrown : Color.lightBronze.opacity(0.45))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(label)
+        .animation(.easeInOut(duration: 0.25), value: enabled)
     }
 }
 

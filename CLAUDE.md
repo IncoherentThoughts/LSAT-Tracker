@@ -125,6 +125,7 @@ Use Swift Charts (native) for all chart components.
 - Shares state with main app via **App Groups** + shared `UserDefaults` suite
 - Dynamic Island support: compact, expanded, and minimal presentations
 - Live Activity ends automatically when the daily timer is reset; starts again when the timer starts
+- **Pause = end with grace, never update-in-place:** pausing (in-app or via the Lock Screen intent) ends the activity with the paused state as final content and `dismissalPolicy: .after(now + 30 min)`, so the SYSTEM removes the card with no app wakeup (survives force-quit/reboot). A `staleDate` never removes a card — it only marks it `.stale` — and an un-ended activity otherwise sits on the Lock Screen for up to 12 h. The ended card is a frozen snapshot: render it without the play/pause button (`ContentState.isEnded`). All activity mutations in `TimerManager` are serialized through one FIFO task pipeline; enumerate `Activity.activities` inside the queued op, not at enqueue time.
 
 ---
 
@@ -225,7 +226,7 @@ extension Color {
 - `LSATTimerAttributes: ActivityAttributes` struct in `LSATTimerAttributes.swift` — must be in **both** the main app target and the widget extension target (use Xcode Target Membership)
 - `ToggleTimerIntent: AppIntent` lives in the widget extension target (`LSATTimerWidget.swift`)
 - Main app starts Live Activity via `Activity<LSATTimerAttributes>.request(...)` on timer start
-- Main app updates state via `activity.update(...)` on pause/resume/foreground
+- Main app updates state via `activity.update(...)` on resume/foreground; pause ends the activity with a 30-min grace dismissal (see above)
 - Main app ends Live Activity via `activity.end(...)` on daily reset
 - Progress bar = `dailyElapsed / dailyGoal` (clamped to 1.0)
 - Default daily goal: 4 hours (14400 seconds), configurable via Settings stepper
