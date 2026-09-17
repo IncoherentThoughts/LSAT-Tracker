@@ -174,9 +174,7 @@ struct SettingsView: View {
                 .environment(timer)
                 .environment(store)
         }
-        .sheet(item: $exportFile) { file in
-            ActivityView(items: [file.url])
-        }
+        .exportPresentation(file: $exportFile)
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: [.json],
@@ -411,9 +409,11 @@ private struct AdvancedSheet: View {
             .padding(.top, 16)
             .background(Color.eggshell.ignoresSafeArea())
             .navigationTitle("Advanced")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                         .foregroundColor(.rosyCopper)
                 }
@@ -429,6 +429,29 @@ private struct ExportFile: Identifiable {
     let url: URL
 }
 
+private extension View {
+    /// iOS hands the backup to the system share sheet. macOS has no share
+    /// sheet for a file URL, so it opens a save panel through `fileExporter`.
+    @ViewBuilder
+    func exportPresentation(file: Binding<ExportFile?>) -> some View {
+        #if os(iOS)
+        self.sheet(item: file) { f in
+            ActivityView(items: [f.url])
+        }
+        #else
+        self.fileExporter(
+            isPresented: Binding(
+                get: { file.wrappedValue != nil },
+                set: { if !$0 { file.wrappedValue = nil } }
+            ),
+            document: file.wrappedValue.map { JSONBackupDocument(url: $0.url) },
+            contentType: .json,
+            defaultFilename: file.wrappedValue?.url.lastPathComponent
+        ) { _ in }
+        #endif
+    }
+}
+
 #if os(iOS)
 private struct ActivityView: UIViewControllerRepresentable {
     let items: [Any]
@@ -436,6 +459,24 @@ private struct ActivityView: UIViewControllerRepresentable {
         UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+#else
+/// Wraps the already-written backup JSON so `fileExporter` can save it.
+private struct JSONBackupDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    let data: Data
+
+    init(url: URL) {
+        data = (try? Data(contentsOf: url)) ?? Data()
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
 }
 #endif
 
