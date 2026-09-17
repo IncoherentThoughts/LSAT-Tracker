@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WidgetKit
 #if os(iOS)
 import ActivityKit
 #endif
@@ -42,6 +43,13 @@ final class TimerManager {
     private var displayTimer: Timer?
     private let suite: UserDefaults
     private let deviceID: String
+    #if os(macOS)
+    /// Written every 60s while the Clock runs so `TimerWidget`'s provider can
+    /// tell a live Mac app from one that has quit (`isStale`). Only macOS
+    /// needs this: on iOS the Live Activity and the intents keep the widget
+    /// honest without the app's help.
+    private var heartbeatTimer: Timer?
+    #endif
     #if os(iOS)
     private var liveActivity: Activity<LSATTimerAttributes>?
     /// Tail of a FIFO chain that serializes EVERY Live Activity mutation
@@ -74,6 +82,9 @@ final class TimerManager {
         performRolloverIfNeeded()
         snapshot.write(to: suite)
         if snapshot.isRunning { startDisplayTimer() }
+        #if os(macOS)
+        if snapshot.isRunning { startHeartbeat() }
+        #endif
         registerForStateChanges()
     }
 
@@ -186,6 +197,9 @@ final class TimerManager {
         syncDisplayTimer()
         persistCurrentDaySession()
         tick += 1
+        if changed || rolled {
+            reloadWidgets()
+        }
         if (changed || rolled) && notify {
             onStateChanged?(snapshot)
         }
@@ -276,6 +290,7 @@ final class TimerManager {
         pastTotal = total
         suite.set(total, forKey: TimerKey.pastTotal)
         tick += 1
+        reloadWidgets()
     }
 
     // MARK: - Private helpers
@@ -287,6 +302,18 @@ final class TimerManager {
         persistCurrentDaySession()
         tick += 1
         onStateChanged?(snapshot)
+        reloadWidgets()
+    }
+
+    /// Refresh the Notification Center / Home Screen timeline and the
+    /// Control Center tile after every Clock Action, on both platforms — the
+    /// timeline policy is `.never`, so nothing else prompts WidgetKit to
+    /// re-read the suite.
+    private func reloadWidgets() {
+        WidgetCenter.shared.reloadAllTimelines()
+        if #available(iOS 18.0, macOS 26.0, *) {
+            ControlCenter.shared.reloadAllControls()
+        }
     }
 
     /// Runs the Rollover; any departing day is queued for persistence.
@@ -320,6 +347,9 @@ final class TimerManager {
     private func syncDisplayTimer() {
         stopDisplayTimer()
         if isRunning { startDisplayTimer() }
+        #if os(macOS)
+        syncHeartbeat()
+        #endif
     }
 
     private func startDisplayTimer() {
@@ -333,6 +363,30 @@ final class TimerManager {
         displayTimer?.invalidate()
         displayTimer = nil
     }
+
+    #if os(macOS)
+    private func syncHeartbeat() {
+        stopHeartbeat()
+        if isRunning { startHeartbeat() }
+    }
+
+    private func startHeartbeat() {
+        stopHeartbeat()
+        writeHeartbeat()
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.writeHeartbeat()
+        }
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+    }
+
+    private func writeHeartbeat() {
+        suite.set(Date(), forKey: TimerKey.appHeartbeat)
+    }
+    #endif
 
     // MARK: - Live Activity management
 
