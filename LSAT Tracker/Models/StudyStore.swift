@@ -3,6 +3,10 @@ import SwiftData
 
 // MARK: - Backup data types (shared encoding contract for export/import)
 
+/// The backup file's on-disk shape. These names are a *file format*, not
+/// suite keys: `totalElapsed` here is the derived All-Time Total written into
+/// the export, and the field must keep its name or every backup a user already
+/// exported stops decoding.
 private struct StatsBackup: Codable {
     let exportDate: Date
     let dailyElapsed: TimeInterval
@@ -22,6 +26,9 @@ private struct SessionBackup: Codable {
 final class StudyStore {
     var modelContext: ModelContext?
 
+    /// The `TimerManager` whose derived totals this store keeps current.
+    weak var timer: TimerManager?
+
     init() {}
 
     // MARK: - Write operations (require modelContext)
@@ -35,8 +42,15 @@ final class StudyStore {
             predicate: #Predicate { $0.date == normalized }
         )
         if let existing = try? context.fetch(descriptor).first {
+            // Skip no-op writes: an unconditional `updatedAt` bump would make
+            // every idle re-persist look like a fresh edit to the merge rule.
+            if existing.duration == duration, existing.isManualEdit == isManual {
+                return
+            }
             existing.duration = duration
             existing.isManualEdit = isManual
+            existing.updatedAt = Date()
+            existing.needsUpload = true
         } else {
             let session = StudySession(date: normalized, duration: duration, isManualEdit: isManual)
             context.insert(session)
@@ -46,6 +60,7 @@ final class StudyStore {
         } catch {
             print("StudyStore: save failed — \(error)")
         }
+        refreshPastTotals()
     }
 
     func deleteAllSessions() {
@@ -60,6 +75,7 @@ final class StudyStore {
         } catch {
             print("StudyStore: deleteAllSessions failed — \(error)")
         }
+        refreshPastTotals()
     }
 
     /// Single session lookup — used by ManualEditView to pre-fill the duration field.
@@ -72,30 +88,48 @@ final class StudyStore {
         return try? context.fetch(descriptor).first
     }
 
-    // MARK: - Data Integrity
+    // MARK: - Derived totals
 
-    /// One-time recalibration to fix totalElapsed if it was corrupted by the
-    /// double-counting bug in check4amBoundary (which previously added dailyElapsed
-    /// to totalElapsed even though totalElapsed already included dailyElapsed).
-    /// Recomputes totalElapsed as sum-of-past-sessions + today's dailyElapsed,
-    /// then marks the migration done so it never runs again.
-    func recalibrateTotalIfNeeded(timer: TimerManager) {
-        let suite = UserDefaults(suiteName: appGroupSuite)
-        let migrationKey = "totalRecalibratedV2"
-        guard !(suite?.bool(forKey: migrationKey) ?? false) else { return }
+    /// The All-Time Total implied by a set of Sessions. The Sessions are the
+    /// history; the total is always a function of them, never a counter kept
+    /// alongside them that can drift.
+    func allTimeTotal(sessions: [StudySession]) -> TimeInterval {
+        sessions.reduce(0) { $0 + $1.duration }
+    }
+
+    /// Recompute the sum of every Session other than the current Study Day's
+    /// (which the Clock covers) and hand it to the timer, which caches it in
+    /// the suite for the widgets and intents.
+    func refreshPastTotals() {
+        guard let timer else { return }
+        let past = fetchAllSessions().filter { $0.date != timer.studyDay }
+        timer.setPastTotal(allTimeTotal(sessions: past))
+    }
+
+    // MARK: - Merge hygiene
+
+    /// Keep one Session per date: the most recently updated wins. Sessions
+    /// dated on or after the current Study Day are left to the timer, which
+    /// re-persists today from the winning Clock State.
+    func dedupeSessions() {
         guard let context = modelContext else { return }
-
-        let today = Calendar.current.startOfDay(for: Date())
-        let descriptor = FetchDescriptor<StudySession>(
-            predicate: #Predicate { $0.date < today }
-        )
-        let pastSessions = (try? context.fetch(descriptor)) ?? []
-        let pastTotal = pastSessions.reduce(0) { $0 + $1.duration }
-        let todayDaily = suite?.double(forKey: "dailyElapsed") ?? 0
-
-        suite?.set(pastTotal + todayDaily, forKey: "totalElapsed")
-        suite?.set(true, forKey: migrationKey)
-        timer.onForeground()
+        var seen: [Date: StudySession] = [:]
+        var removed = false
+        for session in fetchAllSessions() {
+            if let kept = seen[session.date] {
+                let loser = kept.updatedAt >= session.updatedAt ? session : kept
+                let winner = loser === kept ? session : kept
+                context.delete(loser)
+                seen[session.date] = winner
+                removed = true
+            } else {
+                seen[session.date] = session
+            }
+        }
+        if removed {
+            try? context.save()
+        }
+        refreshPastTotals()
     }
 
     // MARK: - Backup & Restore
@@ -104,14 +138,12 @@ final class StudyStore {
     /// in the system temp directory. Returns the file URL for sharing.
     func exportBackupFile(timer: TimerManager) throws -> URL {
         let sessions = fetchAllSessions()
-        let suite = UserDefaults(suiteName: appGroupSuite)
-        let lastResetDate = suite?.object(forKey: "lastResetDate") as? Date
 
         let backup = StatsBackup(
             exportDate: Date(),
             dailyElapsed: timer.computedDaily,
             totalElapsed: timer.computedTotal,
-            lastResetDate: lastResetDate,
+            lastResetDate: timer.studyDay > .distantPast ? timer.studyDay : nil,
             sessions: sessions.map {
                 SessionBackup(date: $0.date, duration: $0.duration, isManualEdit: $0.isManualEdit)
             }
@@ -145,7 +177,12 @@ final class StudyStore {
     }
 
     /// Restores all sessions and timer state from a backup file.
-    /// Pauses the timer, replaces SwiftData records, writes UserDefaults, then rehydrates.
+    ///
+    /// Pauses the timer, replaces the Sessions, then installs a paused Clock
+    /// State carrying the backup's day. The restore is stamped as a Clock
+    /// Action so it wins over whatever stale state another device still holds.
+    /// The All-Time Total is not restored as a number — it falls straight out
+    /// of the restored Sessions plus the restored day.
     func applyBackup(from url: URL, timer: TimerManager) throws {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
@@ -166,16 +203,18 @@ final class StudyStore {
         }
         try? context.save()
 
-        let suite = UserDefaults(suiteName: appGroupSuite)
-        suite?.set(backup.dailyElapsed, forKey: "dailyElapsed")
-        suite?.set(backup.totalElapsed, forKey: "totalElapsed")
-        suite?.set(false,              forKey: "timerRunning")
-        suite?.removeObject(forKey: "timerStartedAt")
-        if let lastReset = backup.lastResetDate {
-            suite?.set(lastReset, forKey: "lastResetDate")
-        }
+        var restored = ClockSnapshot()
+        restored.studyDay = backup.lastResetDate.map { Calendar.current.startOfDay(for: $0) }
+            ?? ClockSnapshot.studyDayStart(for: Date())
+        restored.dailyBase = backup.dailyElapsed
+        restored.dailyGoal = timer.dailyGoal
+        restored.lastActionAt = Date()
+        timer.adopt(restored, notify: true)
+        refreshPastTotals()
 
-        // Rehydrate all in-memory timer state from the restored UserDefaults values.
+        // The restore left the Clock paused; onForeground() sees not-running
+        // with a live card and ends it immediately, so no card is left frozen
+        // on the pre-restore elapsed time.
         timer.onForeground()
     }
 

@@ -24,10 +24,14 @@ struct LSAT_TrackerApp: App {
         .modelContainer(for: StudySession.self) { result in
             if case .success(let container) = result {
                 studyStore.modelContext = container.mainContext
-                studyStore.recalibrateTotalIfNeeded(timer: timerManager)
+                studyStore.timer = timerManager
                 timerManager.persistSession = { [weak studyStore] date, duration in
                     studyStore?.upsertSession(date: date, duration: duration)
                 }
+                // A merge can leave two records for one day; resolve them
+                // before anything derives a total from the history. This also
+                // seeds the cached past-Sessions sum the widgets read.
+                studyStore.dedupeSessions()
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
