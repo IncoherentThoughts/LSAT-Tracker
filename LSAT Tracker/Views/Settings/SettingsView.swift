@@ -47,9 +47,7 @@ struct SettingsView: View {
                     display: "\(dailyGoalHours)h"
                 ) { newValue in
                     dailyGoalHours = newValue
-                    UserDefaults(suiteName: appGroupSuite)?.set(
-                        Double(newValue) * 3600, forKey: "dailyGoal"
-                    )
+                    timer.setDailyGoal(hours: newValue)
                 }
             }
             SettingsDivider()
@@ -134,8 +132,7 @@ struct SettingsView: View {
         }
         .background(Color.eggshell.ignoresSafeArea())
         .onAppear {
-            let g = UserDefaults(suiteName: appGroupSuite)?.double(forKey: "dailyGoal") ?? 0
-            dailyGoalHours = g > 0 ? Int(g / 3600) : 4
+            dailyGoalHours = timer.dailyGoalHours
         }
         .tint(.rosyCopper)
         .alert("Reset Daily Timer?", isPresented: $showResetDailyAlert) {
