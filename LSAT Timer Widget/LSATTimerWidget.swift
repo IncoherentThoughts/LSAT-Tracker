@@ -1,3 +1,4 @@
+#if os(iOS)
 import WidgetKit
 import SwiftUI
 import ActivityKit
@@ -436,3 +437,4 @@ struct LSATTimerLiveActivity: Widget {
         }
     }
 }
+#endif
