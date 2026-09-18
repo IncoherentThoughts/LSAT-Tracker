@@ -29,6 +29,7 @@ struct LSAT_TrackerApp: App {
         _timerManager = State(initialValue: timerManager)
         #if os(macOS)
         _rollover = State(initialValue: MacRolloverScheduler(timer: timerManager))
+        Hotkeys.install(timer: timerManager)
         #endif
     }
 
