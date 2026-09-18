@@ -185,9 +185,14 @@ private struct WidgetClockDigits: View {
             .lineLimit(1)
             .minimumScaleFactor(0.6)
         } else {
-            TimerDigitsView(elapsed: snapshot.dailyBase, size: size)
+            // `TimerDigitsView` (Views/Shared/SharedWidgetViews.swift) has no
+            // `size` parameter — it renders at a fixed 40pt, matching the
+            // Live Activity. Scale the whole view down for the Small family
+            // instead of trying to resize its internal font.
+            TimerDigitsView(elapsed: snapshot.dailyBase)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
+                .scaleEffect(size / 40, anchor: .leading)
         }
     }
 }
