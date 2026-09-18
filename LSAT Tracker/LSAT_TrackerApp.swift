@@ -11,11 +11,7 @@ import SwiftData
 @main
 struct LSAT_TrackerApp: App {
     @Environment(\.scenePhase) private var scenePhase
-    @State private var timerManager: TimerManager
-    @State private var studyStore = StudyStore()
-    @State private var syncClient = SyncClient(
-        suite: UserDefaults(suiteName: appGroupSuite) ?? .standard
-    )
+    @State private var services: AppServices
 
     #if os(macOS)
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -25,10 +21,10 @@ struct LSAT_TrackerApp: App {
     #endif
 
     init() {
-        let timerManager = TimerManager()
-        _timerManager = State(initialValue: timerManager)
+        let services = AppServices()
+        _services = State(initialValue: services)
         #if os(macOS)
-        _rollover = State(initialValue: MacRolloverScheduler(timer: timerManager))
+        _rollover = State(initialValue: MacRolloverScheduler(timer: services.timer))
         #endif
     }
 
@@ -38,16 +34,12 @@ struct LSAT_TrackerApp: App {
         #else
         WindowGroup {
             MainTabView()
-                .environment(timerManager)
-                .environment(studyStore)
-                .environment(syncClient)
+                .environment(services.timer)
+                .environment(services.store)
+                .environment(services.sync)
                 .preferredColorScheme(.light)
         }
-        .modelContainer(for: StudySession.self) { result in
-            if case .success(let container) = result {
-                wireStudyStore(to: container)
-            }
-        }
+        .modelContainer(services.container)
         .onChange(of: scenePhase) { _, newPhase in
             handle(newPhase)
         }
@@ -57,42 +49,19 @@ struct LSAT_TrackerApp: App {
     private func handle(_ phase: ScenePhase) {
         switch phase {
         case .active:
-            timerManager.onForeground()
-            syncClient.resume()
+            services.timer.onForeground()
+            services.sync.resume()
         case .background:
-            timerManager.onBackground()
-            syncClient.suspend()
+            services.timer.onBackground()
+            services.sync.suspend()
         case .inactive:
             // Not a suspend: on macOS the window is inactive whenever another
             // app is frontmost, and dropping Realtime then would stop the Mac
             // following the phone. Matches Russian Tracker.
-            timerManager.onBackground()
+            services.timer.onBackground()
         @unknown default:
             break
         }
-    }
-
-    private func wireStudyStore(to container: ModelContainer) {
-        studyStore.modelContext = container.mainContext
-        studyStore.timer = timerManager
-        studyStore.sync = syncClient
-        syncClient.timer = timerManager
-        syncClient.store = studyStore
-        timerManager.persistSession = { [weak studyStore] date, duration in
-            studyStore?.upsertSession(date: date, duration: duration)
-        }
-        // Every Clock Action marks the Clock dirty and schedules a flush;
-        // the upload itself is the sync client's business.
-        timerManager.onStateChanged = { [weak syncClient] _ in
-            syncClient?.clockChanged()
-        }
-        // A merge can leave two records for one day; resolve them before
-        // anything derives a total from the history. This also seeds the
-        // cached past-Sessions sum the widgets read.
-        studyStore.dedupeSessions()
-        // Follow the stored Account session, if this device has one; the SDK
-        // keeps the refresh token in the Keychain.
-        syncClient.start()
     }
 }
 
@@ -108,33 +77,30 @@ private extension LSAT_TrackerApp {
     var macScenes: some Scene {
         MenuBarExtra {
             MenuBarPopoverView()
-                .environment(timerManager)
-                .environment(studyStore)
+                .environment(services.timer)
+                .environment(services.store)
+                .modelContainer(services.container)
         } label: {
             MenuBarLabel()
-                .environment(timerManager)
+                .environment(services.timer)
         }
         .menuBarExtraStyle(.window)
 
         Window("LSAT Tracker", id: AppDelegate.mainWindowID) {
             MainTabView()
                 .frame(width: 420, height: 780)
-                .environment(timerManager)
-                .environment(studyStore)
-                .environment(syncClient)
+                .environment(services.timer)
+                .environment(services.store)
+                .environment(services.sync)
                 .environment(navigation)
                 .preferredColorScheme(.light)
                 .onAppear {
                     appDelegate.mainWindowDidOpen()
-                    timerManager.onForeground()
+                    services.timer.onForeground()
                 }
                 .onDisappear { appDelegate.mainWindowDidClose() }
         }
-        .modelContainer(for: StudySession.self) { result in
-            if case .success(let container) = result {
-                wireStudyStore(to: container)
-            }
-        }
+        .modelContainer(services.container)
         .defaultSize(width: 420, height: 780)
         .windowResizability(.contentSize)
         .onChange(of: scenePhase) { _, newPhase in
@@ -163,3 +129,51 @@ private extension LSAT_TrackerApp {
     }
 }
 #endif
+
+/// Builds the model container and wires the timer, the store and the sync
+/// client together once, before the first scene appears. A menu-bar-only
+/// launch never opens a window, so this can no longer live in a
+/// `.modelContainer` result closure (see #24) — every scene shares this one
+/// container and these same objects instead.
+@MainActor
+final class AppServices {
+    let container: ModelContainer
+    let timer: TimerManager
+    let store: StudyStore
+    let sync: SyncClient
+
+    init() {
+        let schema = Schema([StudySession.self])
+        do {
+            container = try ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema)])
+        } catch {
+            fatalError("Could not open the local store: \(error)")
+        }
+        timer = TimerManager()
+        store = StudyStore()
+        sync = SyncClient(suite: UserDefaults(suiteName: appGroupSuite) ?? .standard)
+        store.modelContext = container.mainContext
+        store.timer = timer
+        store.sync = sync
+        sync.timer = timer
+        sync.store = store
+
+        timer.persistSession = { [weak store] date, duration in
+            store?.upsertSession(date: date, duration: duration)
+        }
+        // Every Clock Action marks the Clock dirty and schedules a flush;
+        // the upload itself is the sync client's business.
+        timer.onStateChanged = { [weak sync] _ in
+            sync?.clockChanged()
+        }
+        // A merge can leave two records for one day; resolve them before
+        // anything derives a total from the history. This also seeds the
+        // cached past-Sessions sum the widgets read.
+        store.dedupeSessions()
+        // Follow the stored Account session, if this device has one; the SDK
+        // keeps the refresh token in the Keychain.
+        sync.start()
+
+        // #11 lands `Hotkeys.install(timer:)` here, behind `#if os(macOS)`.
+    }
+}
