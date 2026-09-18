@@ -111,6 +111,12 @@ final class SyncClient {
         return false
     }
 
+    /// True once `start()` has begun following the stored Account session —
+    /// i.e. the auth-state listener is running, whether or not any device has
+    /// signed in yet. Exists so callers (and tests) can confirm sync started
+    /// without waiting on a network round trip.
+    var hasStarted: Bool { authTask != nil }
+
     /// One muted line for Settings.
     var statusText: String {
         switch step {
