@@ -54,6 +54,20 @@ nonisolated enum TimerKey {
     /// which means the app that would keep the widget current has quit.
     static let appHeartbeat     = "appHeartbeat"
 
+    // MARK: Sync (ADR 0003)
+
+    /// The Clock State has changed locally and has not reached the server yet.
+    static let syncClockDirty     = "syncClockDirty"
+    /// A global Reset Total happened here and the server-side delete of the
+    /// Account's Sessions has not gone through yet.
+    static let syncPendingDeleteAll = "syncPendingDeleteAll"
+    /// The Account id this device has already done its initial full upload
+    /// for. Anything else means "first sign-in on this device": upload
+    /// everything rather than treating local-only Sessions as deletions.
+    static let syncUploadedFor    = "syncUploadedFor"
+    /// When the last successful `pull()` completed — the Settings status line.
+    static let syncLastPulledAt   = "syncLastPulledAt"
+
     /// Pre-sync installs kept the Study Day here; read once for migration by
     /// `ClockSnapshot(suite:)`, then superseded by `studyDay`.
     static let legacyLastResetDate = "lastResetDate"

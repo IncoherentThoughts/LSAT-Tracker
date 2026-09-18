@@ -13,6 +13,9 @@ struct LSAT_TrackerApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var timerManager: TimerManager
     @State private var studyStore = StudyStore()
+    @State private var syncClient = SyncClient(
+        suite: UserDefaults(suiteName: appGroupSuite) ?? .standard
+    )
 
     #if os(macOS)
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -37,6 +40,7 @@ struct LSAT_TrackerApp: App {
             MainTabView()
                 .environment(timerManager)
                 .environment(studyStore)
+                .environment(syncClient)
                 .preferredColorScheme(.light)
         }
         .modelContainer(for: StudySession.self) { result in
@@ -54,7 +58,14 @@ struct LSAT_TrackerApp: App {
         switch phase {
         case .active:
             timerManager.onForeground()
-        case .background, .inactive:
+            syncClient.resume()
+        case .background:
+            timerManager.onBackground()
+            syncClient.suspend()
+        case .inactive:
+            // Not a suspend: on macOS the window is inactive whenever another
+            // app is frontmost, and dropping Realtime then would stop the Mac
+            // following the phone. Matches Russian Tracker.
             timerManager.onBackground()
         @unknown default:
             break
@@ -64,13 +75,24 @@ struct LSAT_TrackerApp: App {
     private func wireStudyStore(to container: ModelContainer) {
         studyStore.modelContext = container.mainContext
         studyStore.timer = timerManager
+        studyStore.sync = syncClient
+        syncClient.timer = timerManager
+        syncClient.store = studyStore
         timerManager.persistSession = { [weak studyStore] date, duration in
             studyStore?.upsertSession(date: date, duration: duration)
+        }
+        // Every Clock Action marks the Clock dirty and schedules a flush;
+        // the upload itself is the sync client's business.
+        timerManager.onStateChanged = { [weak syncClient] _ in
+            syncClient?.clockChanged()
         }
         // A merge can leave two records for one day; resolve them before
         // anything derives a total from the history. This also seeds the
         // cached past-Sessions sum the widgets read.
         studyStore.dedupeSessions()
+        // Follow the stored Account session, if this device has one; the SDK
+        // keeps the refresh token in the Keychain.
+        syncClient.start()
     }
 }
 
@@ -99,6 +121,7 @@ private extension LSAT_TrackerApp {
                 .frame(width: 420, height: 780)
                 .environment(timerManager)
                 .environment(studyStore)
+                .environment(syncClient)
                 .environment(navigation)
                 .preferredColorScheme(.light)
                 .onAppear {
