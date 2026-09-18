@@ -4,14 +4,15 @@ import SwiftUI
 
 // MARK: - Menu Bar Item label
 
-/// The status-bar label: the app icon as a monochrome template glyph
-/// (`MenuBarIcon` in the asset catalog), plus today's ticking elapsed time
+/// The status-bar label: the app icon's coloured circle (`MenuBarIcon` in
+/// the asset catalog, rendered as-is rather than as a template so it keeps
+/// the app's palette and doesn't look like Russian Tracker's glyph), plus today's ticking elapsed time
 /// only while the Clock is running. Driven by `TimerManager.tick` through
 /// `computedDaily`, so it advances once a second without any timer of its own.
 ///
 /// `MenuBarExtra` flattens its label to a single image and title, discarding
 /// stacks, spacing, hidden views and fixed frames. So the icon and the time
-/// are drawn together into one template `NSImage` whose width is reserved
+/// are drawn together into one `NSImage` whose width is reserved
 /// for the widest string with the same digit count; the item then stays put
 /// while the seconds tick, and the gap after the icon is exactly ours.
 struct MenuBarLabel: View {
@@ -33,7 +34,10 @@ enum MenuBarLabelImage {
     private static let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 
     static func make(text: String) -> NSImage {
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
+        // Not a template image (the icon keeps its colours), so the text
+        // can't rely on template tinting; `labelColor` is dynamic and resolves
+        // against the status item's appearance when the handler draws.
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
         // Same shape as `text` with every digit replaced by the widest one,
         // so the width only steps at 9:59 → 10:00 and 59:59 → 1:00:00.
         let placeholder = String(text.map { $0.isNumber ? "8" : $0 })
@@ -50,7 +54,7 @@ enum MenuBarLabelImage {
             (text as NSString).draw(at: origin, withAttributes: attrs)
             return true
         }
-        image.isTemplate = true
+        image.isTemplate = false
         return image
     }
 }
