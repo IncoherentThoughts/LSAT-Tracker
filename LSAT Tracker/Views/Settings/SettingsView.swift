@@ -133,6 +133,9 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 0) {
                 pageHeader
                 timerGroup
+                #if os(macOS)
+                KeyboardShortcutsSection()
+                #endif
                 advancedGroup
                 SyncSection()
                 backupGroup

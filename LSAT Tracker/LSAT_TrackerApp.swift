@@ -174,6 +174,9 @@ final class AppServices {
         // keeps the refresh token in the Keychain.
         sync.start()
 
-        // #11 lands `Hotkeys.install(timer:)` here, behind `#if os(macOS)`.
+        #if os(macOS)
+        // One global hotkey (⌥0) toggles the Clock from any app.
+        Hotkeys.install(timer: timer)
+        #endif
     }
 }
