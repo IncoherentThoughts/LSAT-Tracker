@@ -4,9 +4,12 @@ import SwiftUI
 @main
 struct LSATWidgetBundle: WidgetBundle {
     var body: some Widget {
+        LSATTimerWidget()
         #if os(iOS)
         LSATTimerLiveActivity()
         #endif
-        // #12 adds the macOS Notification Center and Control Center widgets here.
+        if #available(iOS 18.0, macOS 26.0, *) {
+            LSATTimerControl()
+        }
     }
 }
