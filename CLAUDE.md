@@ -8,9 +8,11 @@
 ## Project Overview
 
 **App Name:** LSAT Timer
-**Platforms:** iOS (primary) + macOS (Catalyst or native SwiftUI)
-**Purpose:** A minimal, distraction-free timer for tracking daily and cumulative LSAT study time.
+**Platforms:** iOS (primary) + macOS (native SwiftUI, feature-identical twin — see [Mac App](#mac-app))
+**Purpose:** A minimal, distraction-free timer for tracking daily and cumulative LSAT study time, synced across a user's devices.
 **Target User:** Law school applicants self-studying for the LSAT who want a frictionless way to track study hours.
+
+**Plan of record:** the macOS port is tracked as a wayfinder map, [issue #3](https://github.com/IncoherentThoughts/LSAT-Tracker/issues/3), on `IncoherentThoughts/LSAT-Tracker`. It carries the up-to-date ticket-by-ticket status and the "Decisions so far" log; this file documents the architecture as it stands and is corrected as tickets land, but the map is the source of truth for what is done versus in flight. See also `docs/adr/` for the design decisions behind the Clock, derived totals, and sync, and `CONTEXT.md` for the domain glossary.
 
 ---
 
@@ -35,22 +37,22 @@ Also consult:
 - **Minimum Deployment Target:** iOS 17+, macOS 14+
 - **Package Manager:** Swift Package Manager only
 
-### File Structure (expected)
+### File Structure (as it stands)
 ```
-LSATTimer/
-├── App/
-│   ├── LSATTimerApp.swift
-│   └── AppDelegate.swift (if needed)
+LSAT Tracker/
+├── LSAT_TrackerApp.swift          # @main. iOS WindowGroup; macOS scenes (MenuBarExtra, Window, Go menu) land with #10
+├── Theme.swift                    # Palette + typography helpers — also in the widget extension target
 ├── Models/
-│   ├── StudySession.swift       # Single session model
-│   ├── StudyStore.swift         # Persistence + business logic
-│   ├── TimerManager.swift       # Observable timer state + Live Activity management
-│   └── LSATTimerAttributes.swift # ActivityKit ActivityAttributes (shared with extension target)
+│   ├── ClockSnapshot.swift        # The Clock State as a plain value: Clock Actions, Rollover, merge, suite read/write — widget-shared
+│   ├── LSATTimerAttributes.swift  # App-group suite name, TimerKey key catalogue, ActivityKit attributes (#if os(iOS)) — widget-shared
+│   ├── ToggleTimerIntent.swift    # AppIntent behind the Live Activity's play/pause button — widget-shared
+│   ├── StudySession.swift         # @Model — one record per Study Day
+│   ├── StudyStore.swift           # SwiftData gateway: upsert/dedupe, derived past totals, backup export/import, chart stats
+│   └── TimerManager.swift         # @Observable owner of the in-memory ClockSnapshot, Live Activity pipeline, foreground/background hooks
 ├── Views/
-│   ├── MainTabView.swift        # Root tab container
+│   ├── MainTabView.swift          # Root tab container + floating capsule tab bar
 │   ├── Timer/
-│   │   ├── TimerView.swift      # Landing page
-│   │   └── TimerDisplay.swift   # Animated timer component
+│   │   └── TimerView.swift        # Landing page
 │   ├── Stats/
 │   │   ├── StatsView.swift
 │   │   └── Charts/
@@ -58,16 +60,26 @@ LSATTimer/
 │   │       ├── WeeklyLineChart.swift
 │   │       ├── MonthlyHeatmap.swift
 │   │       └── TotalRingChart.swift
-│   └── Settings/
-│       ├── SettingsView.swift
-│       └── ManualEditView.swift
-├── LiveActivity/                # Widget extension target (repurposed for Live Activity)
-│   ├── LSATTimerWidget.swift    # ActivityConfiguration + DynamicIsland + ToggleTimerIntent
-│   └── WidgetBundle.swift       # @main LSATWidgetBundle (widget extension target only)
-├── Resources/
-│   └── Assets.xcassets
-└── Examples/                    # Reference images — do not ship in app bundle
+│   ├── Settings/
+│   │   ├── SettingsView.swift
+│   │   └── ManualEditView.swift
+│   └── Shared/
+│       └── SharedWidgetViews.swift # Views the Live Activity, (planned) Mac popover, and (planned) timeline widget all use — widget-shared
+├── LSAT Tracker.entitlements / .macOS.entitlements
+└── Mac/                            # Not yet present — menu bar shell lands with #10 (see Mac App)
+
+LSAT Timer Widget/                  # Widget extension target
+├── LSATTimerWidget.swift           # ActivityConfiguration + DynamicIsland (the Live Activity)
+└── WidgetBundle.swift              # @main bundle
+
+Examples/                           # Reference images — do not ship in app bundle
 ```
+
+Widget-target membership is the `membershipExceptions` list in the
+`.xcodeproj`. Only the five files above marked "widget-shared" may be
+referenced from the widget extension's code
+(`Models/LSATTimerAttributes.swift`, `Models/ToggleTimerIntent.swift`,
+`Models/ClockSnapshot.swift`, `Theme.swift`, `Views/Shared/SharedWidgetViews.swift`).
 
 ---
 
@@ -107,7 +119,7 @@ Use Swift Charts (native) for all chart components.
 ### 3. Settings Page (Left Panel)
 - **Daily Goal** — stepper (1–10 hours, default 4h) that sets the Live Activity progress bar target. Stored in shared UserDefaults key `"dailyGoal"`.
 - **Reset Daily Timer** — resets today's timer to 0:00:00. Confirm once with an action sheet or alert.
-- **Reset Total Timer** — resets all-time total to zero. Confirm **twice** (two sequential confirmation dialogs) before executing.
+- **Reset Total Timer** — deletes every Session and zeroes today's Clock, which is what "all-time total" derives from (see `docs/adr/0002-derived-all-time-totals.md`). Confirm **twice** (two sequential confirmation dialogs) before executing. Today this resets only the signed-in device's own history; once sync ([issue #13](https://github.com/IncoherentThoughts/LSAT-Tracker/issues/13)) lands, this becomes a global reset of the Account's Sessions everywhere, and the second confirmation's copy must say so.
 - **Advanced Options** (collapsible section):
   - **Manual Day Edit** — user selects a date from a date picker, then inputs a custom study duration for that day (hours + minutes). This overwrites whatever was recorded for that date. Useful if they forgot to start the timer or left it running overnight.
   - Input validation: duration must be between 0 and 23h 59m.
@@ -191,31 +203,50 @@ extension Color {
 
 ## Timer Logic (Critical Implementation Notes)
 
-```swift
-// TimerManager.swift — core behavior contract
+The Clock is modeled as `ClockSnapshot` (`Models/ClockSnapshot.swift`), a
+plain `Codable` value shared by the app, the widget extension, and the Lock
+Screen intents. See `CONTEXT.md` for the vocabulary (Clock, Clock Action,
+Study Day, Rollover, Session) and `docs/adr/0001-shared-clock-with-last-action-wins.md`
+for why it works this way. This replaces the pre-#9 design that stored raw
+`dailyElapsed` / `totalElapsed` counters and checked a `lastResetDate`
+boundary by hand in `TimerManager`.
 
-// Storage keys (shared UserDefaults suite for Live Activity access)
-// "dailyElapsed"         — Double (seconds) for today
-// "totalElapsed"         — Double (seconds) all time
-// "lastResetDate"        — Date of last 4am reset
-// "timerRunning"         — Bool
-// "timerStartedAt"       — Date? (when currently running session began)
-// "dailyGoal"            — Double (seconds), default 14400 (4 hours)
+**Shared app-group suite keys** (`TimerKey` in `Models/LSATTimerAttributes.swift`):
 
-// On every app foreground:
-// 1. Check if a new 4am boundary has passed since lastResetDate
-// 2. If yes: add dailyElapsed to totalElapsed, reset dailyElapsed to 0, update lastResetDate
-// 3. If timerRunning == true and timerStartedAt is set:
-//    add (now - timerStartedAt) to displayed time (do NOT persist yet — persist on pause or background)
+- `dailyElapsed` — Double (seconds), the current Study Day's banked time excluding any in-flight run (`ClockSnapshot.dailyBase`)
+- `timerRunning` — Bool
+- `timerStartedAt` — Date?, when the current run began
+- `dailyGoal` — Double (seconds), default 14400 (4 hours)
+- `studyDay` — Date, start-of-day of the Study Day the counters belong to (4am-anchored, not midnight)
+- `lastActionAt` / `lastActionDevice` — the last Clock Action's timestamp and origin device, used for last-action-wins merges
+- `deviceID` — this device's stable id
+- `pendingSessions` — departing Study Days an intent rolled over but couldn't persist as a Session itself (no SwiftData in the intent process); the app drains this queue on next launch
+- `pastTotal` — cached sum of every persisted Session, so the All-Time Total (`pastTotal + today's Clock time`) can be shown without opening SwiftData — see `docs/adr/0002-derived-all-time-totals.md`
+- `appHeartbeat` — written by a running Mac app every minute and on every Clock Action, so a widget can tell a quit Mac app from one that's just idle
 
-// On pause / background / app kill:
-// Persist current elapsed to shared UserDefaults immediately
-// Update timerStartedAt = nil, timerRunning = false (or keep running flag + timestamp for background)
+**There is deliberately no `totalElapsed` key.** The All-Time Total is always
+derived, never stored as a running counter — see
+`docs/adr/0002-derived-all-time-totals.md`. `totalElapsed` still appears in
+two places on purpose and neither is a live suite key:
+- `TimerKey.retired`, a list of keys a pre-refactor build wrote that nothing
+  reads any more; the app clears them once on launch so a stale value can't
+  be mistaken for truth.
+- The `StatsBackup` JSON export/import **file field name** — renaming that
+  would break every backup a user has already exported, so the field keeps
+  its old name even though it is now populated from the derived total.
 
-// Background running:
-// Timer continues even when app is backgrounded — track by start timestamp, compute on return
-// Do NOT use a live Timer in background — just store the start time and calculate difference on return
-```
+**On every app foreground** (`TimerManager.onForeground()`):
+1. Reload the Clock State from the suite (another device may have changed it).
+2. Roll over if the Study Day has passed its 4am boundary (`ClockSnapshot.rollover(now:)`, idempotent — safe even if another device already did it).
+3. Reconcile against any pending Session a Lock Screen intent rolled over on the app's behalf while it wasn't running.
+
+**On pause / background:** the run is always banked into `dailyBase` before
+the snapshot is written — see `ClockSnapshot.bank(at:)` — so there is never a
+window where the persisted state and the displayed time disagree.
+
+**Background running:** the Clock is tracked by `runStartedAt`, not a live
+`Timer`; elapsed time is computed from that timestamp whenever anything needs
+to show or persist it.
 
 ---
 
@@ -236,12 +267,35 @@ extension Color {
 
 ---
 
-## macOS Considerations
+## Mac App
 
-- Use SwiftUI `#if os(macOS)` conditionals for platform-specific layout adjustments
-- macOS version: single window, minimum size 400×600pt
-- No Live Activity on macOS (not applicable) — use `#if os(iOS)` guards around all ActivityKit code
-- Menu bar item optional stretch goal: show running/paused status + elapsed time in menu bar
+LSAT Tracker on macOS is a feature-identical twin of the iOS app minus the
+Live Activity (macOS has no Lock Screen), built as a menu bar agent rather
+than a Dock-first app. It shares the same Clock, the same `ClockSnapshot`
+domain model, and the same App Group with iOS — see `docs/adr/0003-supabase-sync-transport.md`
+for how the two devices agree on Clock state.
+
+**Current status:** the project builds and runs on macOS today — the app,
+iOS target, and widget extension all target `iphoneos iphonesimulator macosx`
+(`MACOSX_DEPLOYMENT_TARGET = 15.0`+), and the plain App Group id
+`group.evan.lsattimer` signs correctly on a sandboxed Mac build with no
+team-prefixed form and no platform-keyed suite name needed (verified by
+inspecting the signed `.app`/`.appex` entitlements, not just the source
+files). What does **not** exist yet is Mac-specific UI or behavior: there is
+no `Mac/` directory, no menu bar item, no dedicated window chrome, no
+hotkeys, and no Notification Center or Control Center widget. Those are
+in-flight tickets, not shipped features:
+
+- **Menu bar agent + window** ([issue #10](https://github.com/IncoherentThoughts/LSAT-Tracker/issues/10)) — planned: `LSUIElement` activation-policy behavior (menu bar only, no Dock icon by default), a `MenuBarExtra` popover showing today's time, the all-time total, Start/Pause, and the Daily Goal bar, plus a single `Window` (420×780) reachable from the popover's "Open" link and from a Go menu (⌘1/⌘2/⌘3). A Mac-only rollover scheduler keeps the Study Day current while the app is never foregrounded (4am timer, wake-from-sleep, clock/time-zone change).
+- **Global hotkeys + App Shortcuts** ([issue #11](https://github.com/IncoherentThoughts/LSAT-Tracker/issues/11)) — planned: one system-wide hotkey (⌥0 by default) to toggle the Clock without opening the app, plus Siri/Spotlight/Shortcuts actions for Start and Pause.
+- **Notification Center + Control Center widgets** ([issue #12](https://github.com/IncoherentThoughts/LSAT-Tracker/issues/12)) — planned: a timeline widget (small/medium) reading the shared suite directly (no live `Timer` in a widget process), and a Control Center toggle. Both need `appHeartbeat` to detect a quit Mac app versus an idle one.
+- **Cross-device sync** ([issue #13](https://github.com/IncoherentThoughts/LSAT-Tracker/issues/13)) — planned, see `docs/adr/0003-supabase-sync-transport.md`. Without it, the Mac and iPhone builds each track their own local Clock and Session history; they do not yet share state.
+
+Until those land, treat any description of a running menu bar item, a Mac
+window, a hotkey, or a Mac widget as the design, not the current build. Use
+SwiftUI `#if os(macOS)` / `#if os(iOS)` conditionals for platform-specific
+code, and keep all ActivityKit code behind `#if os(iOS)` — there is no Live
+Activity equivalent on macOS.
 
 ---
 
@@ -250,16 +304,20 @@ extension Color {
 ```swift
 // StudySession.swift
 @Model
-class StudySession {
-    var date: Date          // normalized to start of day (midnight)
-    var duration: TimeInterval  // total seconds for that day
-    var isManualEdit: Bool  // true if user manually edited this entry
+final class StudySession {
+    var date: Date               // normalized to start of day (midnight)
+    var duration: TimeInterval   // total seconds for that Study Day
+    var isManualEdit: Bool       // true if the user manually edited this entry
+    var updatedAt: Date          // last-write timestamp; resolves duplicates after a sync merge
+    var needsUpload: Bool        // true until this row has reached the Account's server copy
 }
 ```
 
-- One `StudySession` per calendar day
-- Manual edits overwrite the day's entry and flag `isManualEdit = true`
-- Query by date range for all chart data
+- One `StudySession` per Study Day (see `CONTEXT.md`), not strictly a calendar day — the day boundary is 4am, not midnight.
+- Every property is defaulted and there is no unique constraint on `date`: a merge can legitimately produce two records for the same day for a moment, and `StudyStore.dedupeSessions()` resolves them by `updatedAt` (later wins) rather than the write failing.
+- Manual edits overwrite the day's entry and flag `isManualEdit = true`.
+- `needsUpload` exists for the sync layer ([issue #13](https://github.com/IncoherentThoughts/LSAT-Tracker/issues/13)); today it is set on every local write and nothing yet clears it.
+- Query by date range for all chart data.
 
 ---
 
@@ -282,11 +340,11 @@ class StudySession {
 ## Stretch Goals (Post-MVP)
 
 - [ ] Apple Watch complication (mirrors Live Activity display)
-- [ ] iCloud sync via CloudKit so stats persist across devices
+- [x] Cross-device sync — decided as Supabase, not CloudKit; see `docs/adr/0003-supabase-sync-transport.md` and [issue #13](https://github.com/IncoherentThoughts/LSAT-Tracker/issues/13) (in flight)
 - [ ] Daily study goal setting with notification reminder
 - [ ] Export study data as CSV
-- [ ] macOS menu bar mini-timer
-- [ ] Siri Shortcut: "Start my LSAT timer"
+- [x] macOS menu bar mini-timer — in flight, see [issue #10](https://github.com/IncoherentThoughts/LSAT-Tracker/issues/10)
+- [ ] Siri Shortcut: "Start my LSAT timer" — tracked as part of [issue #11](https://github.com/IncoherentThoughts/LSAT-Tracker/issues/11)
 
 ---
 
@@ -310,7 +368,7 @@ class StudySession {
 
 ---
 
-*Last updated: 2026-03-01 — replaced WidgetKit lock screen widget with ActivityKit Live Activity.*
+*Last updated: 2026-09-17 — documented the macOS port status, the ClockSnapshot-based storage keys and derived totals from #9, and linked the ADRs and glossary added for #14.*
 
 ---
 
