@@ -29,6 +29,10 @@ final class StudyStore {
     /// The `TimerManager` whose derived totals this store keeps current.
     weak var timer: TimerManager?
 
+    /// The Account's wire (ADR 0003). Told about every local write; feeds
+    /// remote rows back through `applyRemote` and `deleteSession`.
+    weak var sync: SyncClient?
+
     init() {}
 
     // MARK: - Write operations (require modelContext)
@@ -43,7 +47,9 @@ final class StudyStore {
         )
         if let existing = try? context.fetch(descriptor).first {
             // Skip no-op writes: an unconditional `updatedAt` bump would make
-            // every idle re-persist look like a fresh edit to the merge rule.
+            // every idle re-persist look like a fresh edit to the merge rule,
+            // and — once sync is on — a row adopted from the server would be
+            // re-marked `needsUpload` and echo straight back out, looping.
             if existing.duration == duration, existing.isManualEdit == isManual {
                 return
             }
@@ -61,6 +67,7 @@ final class StudyStore {
             print("StudyStore: save failed — \(error)")
         }
         refreshPastTotals()
+        sync?.sessionsChanged()
     }
 
     func deleteAllSessions() {
@@ -86,6 +93,76 @@ final class StudyStore {
             predicate: #Predicate { $0.date == normalized }
         )
         return try? context.fetch(descriptor).first
+    }
+
+    // MARK: - Sync (ADR 0003)
+
+    /// Every Session, oldest first.
+    func allSessions() -> [StudySession] { fetchAllSessions() }
+
+    func sessionsNeedingUpload() -> [StudySession] {
+        fetchAllSessions().filter { $0.needsUpload }
+    }
+
+    /// Clear `needsUpload` now that these rows have reached the server.
+    ///
+    /// Each pair carries the `updatedAt` the row had when it was put on the
+    /// wire. A local write can land while the upload is in flight; clearing
+    /// the flag on that *newer* value would strand it here with nothing left
+    /// to push it, so a row that moved on keeps its flag and goes out on the
+    /// next flush. This is the only thing that ever clears `needsUpload` for
+    /// a locally-written Session.
+    func markUploaded(_ uploaded: [(StudySession, Date)]) {
+        for (session, sentAt) in uploaded where session.updatedAt == sentAt {
+            session.needsUpload = false
+        }
+        try? modelContext?.save()
+    }
+
+    func markNeedsUpload(dates: Set<Date>) {
+        guard !dates.isEmpty else { return }
+        for s in fetchAllSessions() where dates.contains(s.date) {
+            s.needsUpload = true
+        }
+        try? modelContext?.save()
+    }
+
+    /// Install a server row, unless the local copy is newer. Never marks the
+    /// row for upload: it just came from there.
+    func applyRemote(_ row: SessionRow) {
+        guard let context = modelContext, let day = row.day else { return }
+        let descriptor = FetchDescriptor<StudySession>(predicate: #Predicate { $0.date == day })
+        let existing = try? context.fetch(descriptor).first
+        if let existing, existing.updatedAt > row.updatedAt { return }
+        let session = existing ?? {
+            let fresh = StudySession(date: day, duration: row.duration, isManualEdit: row.is_manual_edit)
+            context.insert(fresh)
+            return fresh
+        }()
+        session.duration = row.duration
+        session.isManualEdit = row.is_manual_edit
+        session.updatedAt = row.updatedAt
+        session.needsUpload = false
+        try? context.save()
+    }
+
+    /// Remove the Session for `date`. With `unlessPending`, a copy that still
+    /// waits to upload is kept (it will reach the server on the next flush).
+    func deleteSession(on date: Date, unlessPending: Bool = false) {
+        guard let context = modelContext else { return }
+        let descriptor = FetchDescriptor<StudySession>(predicate: #Predicate { $0.date == date })
+        for s in (try? context.fetch(descriptor)) ?? [] {
+            if unlessPending, s.needsUpload { continue }
+            context.delete(s)
+        }
+        try? context.save()
+    }
+
+    /// The global reset: every Session here and on the Account's server copy.
+    /// Other signed-in devices see the deletions live, or on their next pull.
+    func resetAllSessionsEverywhere() {
+        deleteAllSessions()
+        sync?.deleteAllRemote()
     }
 
     // MARK: - Derived totals
@@ -196,7 +273,12 @@ final class StudyStore {
         // sees not-running with a live card and ends it immediately instead.
         if timer.isRunning { timer.pause(endingLiveActivity: false) }
 
-        deleteAllSessions()
+        // A restore replaces the Account's history everywhere, not just here.
+        // Both the delete-all and the re-inserted Sessions are queued before
+        // this synchronous method returns, so the one flush that follows
+        // deletes first and then uploads the restored rows — never the
+        // reverse.
+        resetAllSessionsEverywhere()
         guard let context = modelContext else { return }
         for s in backup.sessions {
             context.insert(StudySession(date: s.date, duration: s.duration, isManualEdit: s.isManualEdit))
@@ -208,9 +290,12 @@ final class StudyStore {
             ?? ClockSnapshot.studyDayStart(for: Date())
         restored.dailyBase = backup.dailyElapsed
         restored.dailyGoal = timer.dailyGoal
+        // Stamped as a Clock Action *now* so the restore outranks whatever
+        // stale Clock State another device still holds (ADR 0001/0003).
         restored.lastActionAt = Date()
         timer.adopt(restored, notify: true)
         refreshPastTotals()
+        sync?.sessionsChanged()
 
         // The restore left the Clock paused; onForeground() sees not-running
         // with a live card and ends it immediately, so no card is left frozen

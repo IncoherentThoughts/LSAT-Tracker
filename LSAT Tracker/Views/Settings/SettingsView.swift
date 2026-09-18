@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @Environment(TimerManager.self) private var timer
     @Environment(StudyStore.self) private var store
+    @Environment(SyncClient.self) private var sync
 
     @State private var showResetDailyAlert = false
     @State private var showResetTotalAlert1 = false
@@ -104,6 +105,16 @@ struct SettingsView: View {
                     .font(.system(size: 14, weight: .regular, design: .monospaced))
                     .foregroundColor(.bronzeMuted)
             }
+            SettingsDivider()
+            // The one place sync status appears. Muted on purpose: trust needs
+            // somewhere to check, the Timer screen stays silent.
+            SettingsRow(icon: "arrow.triangle.2.circlepath", label: "Sync") {
+                Text(sync.statusText)
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundColor(.bronzeMuted)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
         }
     }
 
@@ -123,6 +134,7 @@ struct SettingsView: View {
                 pageHeader
                 timerGroup
                 advancedGroup
+                SyncSection()
                 backupGroup
                 aboutGroup
             }
@@ -152,14 +164,17 @@ struct SettingsView: View {
         } message: {
             Text("This will permanently erase your all-time study total. Are you sure?")
         }
+        // Two confirmations, always — the second one now also has to say that
+        // the reset is global, because with sync on it no longer stops at
+        // this device (issue #13, ADR 0003).
         .alert("This Cannot Be Undone", isPresented: $showResetTotalAlert2) {
             Button("Reset Everything", role: .destructive) {
                 timer.resetTotal()
-                store.deleteAllSessions()
+                store.resetAllSessionsEverywhere()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Your entire study history total will be permanently deleted.")
+            Text("This deletes every session on all your devices.")
         }
         .sheet(isPresented: $showManualEdit) {
             ManualEditView()
@@ -223,7 +238,7 @@ struct SettingsView: View {
 
 // MARK: - Settings primitives
 
-private struct SettingsGroupView<Content: View>: View {
+struct SettingsGroupView<Content: View>: View {
     var label: String? = nil
     @ViewBuilder let content: () -> Content
 
@@ -250,7 +265,7 @@ private struct SettingsGroupView<Content: View>: View {
     }
 }
 
-private struct SettingsDivider: View {
+struct SettingsDivider: View {
     var body: some View {
         Rectangle()
             .fill(Color.hairline)
@@ -259,7 +274,7 @@ private struct SettingsDivider: View {
     }
 }
 
-private struct SettingsRow<Trailing: View>: View {
+struct SettingsRow<Trailing: View>: View {
     let icon: String
     var iconWeight: Font.Weight = .regular
     let label: String
